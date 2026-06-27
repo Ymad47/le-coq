@@ -11,7 +11,7 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    std.debug.print("🐓 La Coq — Apollo v0.1.0\n", .{});
+    std.debug.print("🐓 Le Coq — Apollo v0.1.0\n", .{});
     std.debug.print("Initialisation du core CI/CD...\n", .{});
 
     // TODO: 

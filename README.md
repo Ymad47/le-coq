@@ -1,4 +1,4 @@
-# La Coq 🐓
+# Le Coq 🐓
 
 **Software souverain de data integration & analytics**
 
