@@ -1,0 +1,23 @@
+# Build
+zig-out/
+*.o
+*.so
+*.a
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.key
+*.pem
+secrets/
+
+# Reports
+reports/
+audits/
