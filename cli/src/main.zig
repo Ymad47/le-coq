@@ -65,6 +65,7 @@ fn printHelp() !void {
 }
 
 fn cmdSearch(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    _ = allocator; // Suppress unused parameter warning
     if (args.len == 0) {
         std.debug.print("Error: search query required\n", .{});
         std.process.exit(1);
@@ -81,6 +82,7 @@ fn cmdSearch(allocator: std.mem.Allocator, args: []const []const u8) !void {
 }
 
 fn cmdGraph(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    _ = allocator; // Suppress unused parameter warning
     if (args.len == 0) {
         std.debug.print("Error: entity ID required\n", .{});
         std.process.exit(1);
@@ -97,6 +99,7 @@ fn cmdGraph(allocator: std.mem.Allocator, args: []const []const u8) !void {
 }
 
 fn cmdIngest(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    _ = allocator; // Suppress unused parameter warning
     if (args.len == 0) {
         std.debug.print("Error: source name required\n", .{});
         std.process.exit(1);
@@ -113,6 +116,7 @@ fn cmdIngest(allocator: std.mem.Allocator, args: []const []const u8) !void {
 }
 
 fn cmdExport(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    _ = allocator; // Suppress unused parameter warning
     if (args.len == 0) {
         std.debug.print("Error: export format required (pdf/json/csv)\n", .{});
         std.process.exit(1);

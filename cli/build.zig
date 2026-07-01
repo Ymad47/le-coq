@@ -12,8 +12,7 @@ pub fn build(b: *std.Build) void {
     });
     
     // Enable static linking for single binary
-    exe.link_libc = true;
-    exe.root_module.linkage = .static;
+    exe.linkLibC();
     
     b.installArtifact(exe);
     

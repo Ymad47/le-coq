@@ -5,6 +5,10 @@ edition = "2021"
 description = "Geopolitical intelligence platform - Rust backend core"
 license = "AGPL-3.0"
 
+[[bin]]
+name = "le-coq-backend"
+path = "backend/src/main.rs"
+
 [dependencies]
 # Web framework
 axum = "0.7"
@@ -13,7 +17,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
 neo4rs = "0.7"
 
 # Serialization
