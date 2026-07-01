@@ -1,0 +1,8 @@
+//! Graph algorithms and analysis
+
+use anyhow::Result;
+
+// TODO: Implement centrality algorithms (PageRank, Betweenness)
+// TODO: Implement community detection (Louvain, Label Propagation)
+// TODO: Implement pathfinding (shortest path, all paths)
+// TODO: Implement temporal graph analysis
