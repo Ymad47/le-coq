@@ -11,11 +11,7 @@ pub async fn create_pool(database_url: &str) -> Result<PgPool> {
         .await?;
     
     // Run migrations
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    sqlx::migrate!("backend/migrations").run(&pool).await?;
     
     Ok(pool)
 }
-
-// TODO: Add entity CRUD functions
-// TODO: Add relationship queries
-// TODO: Add geospatial queries with PostGIS
