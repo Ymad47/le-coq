@@ -40,8 +40,23 @@ pub fn main() !void {
 }
 
 fn printHelp() !void {
+    const coq_art =
+        \\           .--.
+        \\          |o_o |
+        \\          |:_/ |
+        \\         //   \ \
+        \\        (|     | )
+        \\       /'\_   _/`
+        \\       \___)=(___/
+        \\
+    ;
+    
     const help = 
         \\Le Coq CLI v0.1.0 - Geopolitical Intelligence Tool
+        \\
+        \\{s}
+        \\    Le Coq - French Rooster
+        \\    Colors: Blue | White | Red
         \\
         \\Usage: le-coq <command> [options]
         \\
@@ -66,7 +81,7 @@ fn printHelp() !void {
         \\  le-coq export pdf --output report.pdf
         \\
     ;
-    try std.io.getStdErr().writer().print("{s}", .{help});
+    try std.io.getStdErr().writer().print(help, .{coq_art});
 }
 
 fn cmdSearch(allocator: std.mem.Allocator, args: []const []const u8) !void {
