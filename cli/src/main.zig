@@ -86,7 +86,6 @@ fn printHelp() !void {
 }
 
 fn cmdSearch(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    _ = allocator; // Suppress unused parameter warning
     if (args.len == 0) {
         std.debug.print("Error: search query required\n", .{});
         std.process.exit(1);
@@ -98,14 +97,17 @@ fn cmdSearch(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Load configuration
     const config = try lib.Config.load();
     
-    // For now, just show that we would connect to the backend
-    std.debug.print("Would connect to backend at: {s}\n", .{config.backend_url});
-    std.debug.print("Would search for query: {s}\n", .{query});
-    std.debug.print("⚠️  Actual implementation pending\n", .{});
+    // Search entities
+    const results = lib.searchEntities(allocator, config.backend_url, query) catch |err| {
+        std.debug.print("Error searching entities: {any}\n", .{err});
+        std.process.exit(1);
+    };
+    defer allocator.free(results);
+    
+    std.debug.print("Results:\n{s}\n", .{results});
 }
 
 fn cmdList(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    _ = allocator; // Suppress unused parameter warning
     _ = args; // Suppress unused parameter warning
     
     std.debug.print("📋 Listing all entities\n", .{});
@@ -113,10 +115,14 @@ fn cmdList(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Load configuration
     const config = try lib.Config.load();
     
-    // For now, just show that we would connect to the backend
-    std.debug.print("Would connect to backend at: {s}\n", .{config.backend_url});
-    std.debug.print("Would list all entities\n", .{});
-    std.debug.print("⚠️  Actual implementation pending\n", .{});
+    // Fetch entities
+    const entities = lib.fetchEntities(allocator, config.backend_url) catch |err| {
+        std.debug.print("Error fetching entities: {any}\n", .{err});
+        std.process.exit(1);
+    };
+    defer allocator.free(entities);
+    
+    std.debug.print("Entities:\n{s}\n", .{entities});
 }
 
 fn cmdGraph(allocator: std.mem.Allocator, args: []const []const u8) !void {
