@@ -52,70 +52,103 @@ async fn list_entities(
 ) -> Result<Json<Vec<EntityResponse>>, StatusCode> {
     let mut sql = String::from("SELECT id, name, entity_type, properties FROM entities WHERE 1=1");
     
-    if query.r#type.is_some() {
-        sql.push_str(" AND entity_type = $1");
-    }
-    
-    if query.q.is_some() {
-        sql.push_str(" AND (name ILIKE $2 OR properties::text ILIKE $2)");
-    }
-    
-    sql.push_str(" ORDER BY created_at DESC LIMIT $3");
-    
-    let limit = query.limit.unwrap_or(100).min(1000) as i32;
-    
-    let rows = if let (Some(t), Some(q_str)) = (&query.r#type, &query.q) {
-        sqlx::query(&sql)
-            .bind(t)
-            .bind(format!("%{}%", q_str))
+    if query.r#type.is_some() && query.q.is_some() {
+        sql.push_str(" AND entity_type = $1 AND (name ILIKE $2 OR properties::text ILIKE $2) ORDER BY created_at DESC LIMIT $3");
+        let limit = query.limit.unwrap_or(100).min(1000) as i32;
+        
+        let rows = sqlx::query(&sql)
+            .bind(&query.r#type.as_ref().unwrap())
+            .bind(format!("%{}%", &query.q.as_ref().unwrap()))
             .bind(limit)
             .fetch_all(&state.postgres)
             .await
             .map_err(|e| {
                 tracing::error!("DB error: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?
-    } else if let Some(t) = &query.r#type {
-        sqlx::query(&sql)
-            .bind(t)
+            })?;
+            
+        let entities: Vec<EntityResponse> = rows.iter().map(|row| {
+            EntityResponse {
+                id: row.get::<uuid::Uuid, _>("id").to_string(),
+                name: row.get("name"),
+                r#type: row.get("entity_type"),
+                properties: row.get("properties"),
+            }
+        }).collect();
+        
+        Ok(Json(entities))
+    } else if query.r#type.is_some() {
+        sql.push_str(" AND entity_type = $1 ORDER BY created_at DESC LIMIT $2");
+        let limit = query.limit.unwrap_or(100).min(1000) as i32;
+        
+        let rows = sqlx::query(&sql)
+            .bind(&query.r#type.as_ref().unwrap())
             .bind(limit)
             .fetch_all(&state.postgres)
             .await
             .map_err(|e| {
                 tracing::error!("DB error: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?
-    } else if let Some(q_str) = &query.q {
-        sqlx::query(&sql)
-            .bind(format!("%{}%", q_str))
+            })?;
+            
+        let entities: Vec<EntityResponse> = rows.iter().map(|row| {
+            EntityResponse {
+                id: row.get::<uuid::Uuid, _>("id").to_string(),
+                name: row.get("name"),
+                r#type: row.get("entity_type"),
+                properties: row.get("properties"),
+            }
+        }).collect();
+        
+        Ok(Json(entities))
+    } else if query.q.is_some() {
+        sql.push_str(" AND (name ILIKE $1 OR properties::text ILIKE $1) ORDER BY created_at DESC LIMIT $2");
+        let limit = query.limit.unwrap_or(100).min(1000) as i32;
+        
+        let rows = sqlx::query(&sql)
+            .bind(format!("%{}%", &query.q.as_ref().unwrap()))
             .bind(limit)
             .fetch_all(&state.postgres)
             .await
             .map_err(|e| {
                 tracing::error!("DB error: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?
+            })?;
+            
+        let entities: Vec<EntityResponse> = rows.iter().map(|row| {
+            EntityResponse {
+                id: row.get::<uuid::Uuid, _>("id").to_string(),
+                name: row.get("name"),
+                r#type: row.get("entity_type"),
+                properties: row.get("properties"),
+            }
+        }).collect();
+        
+        Ok(Json(entities))
     } else {
-        sqlx::query(&sql)
+        sql.push_str(" ORDER BY created_at DESC LIMIT $1");
+        let limit = query.limit.unwrap_or(100).min(1000) as i32;
+        
+        let rows = sqlx::query(&sql)
             .bind(limit)
             .fetch_all(&state.postgres)
             .await
             .map_err(|e| {
                 tracing::error!("DB error: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
-            })?
-    };
-    
-    let entities: Vec<EntityResponse> = rows.iter().map(|row| {
-        EntityResponse {
-            id: row.get("id"),
-            name: row.get("name"),
-            r#type: row.get("entity_type"),
-            properties: row.get("properties"),
-        }
-    }).collect();
-    
-    Ok(Json(entities))
+            })?;
+            
+        let entities: Vec<EntityResponse> = rows.iter().map(|row| {
+            EntityResponse {
+                id: row.get::<uuid::Uuid, _>("id").to_string(),
+                name: row.get("name"),
+                r#type: row.get("entity_type"),
+                properties: row.get("properties"),
+            }
+        }).collect();
+        
+        Ok(Json(entities))
+    }
 }
 
 async fn create_entity(
@@ -156,10 +189,10 @@ async fn create_entity(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
     
-    let id: String = row.get("id");
+    let id: uuid::Uuid = row.get("id");
     
     let entity = EntityResponse {
-        id,
+        id: id.to_string(),
         name: name.to_string(),
         r#type: entity_type.to_string(),
         properties,
@@ -183,7 +216,7 @@ async fn get_entity(
     
     row.map(|r| {
         Json(EntityResponse {
-            id: r.get("id"),
+            id: r.get::<uuid::Uuid, _>("id").to_string(),
             name: r.get("name"),
             r#type: r.get("entity_type"),
             properties: r.get("properties"),
@@ -204,9 +237,9 @@ async fn list_relationships(
     
     let rels: Vec<serde_json::Value> = rows.iter().map(|row| {
         serde_json::json!({
-            "id": row.get::<String, _>("id"),
-            "from_entity": row.get::<String, _>("from_entity"),
-            "to_entity": row.get::<String, _>("to_entity"),
+            "id": row.get::<uuid::Uuid, _>("id").to_string(),
+            "from_entity": row.get::<uuid::Uuid, _>("from_entity").to_string(),
+            "to_entity": row.get::<uuid::Uuid, _>("to_entity").to_string(),
             "relationship_type": row.get::<String, _>("relationship_type"),
             "properties": row.get::<serde_json::Value, _>("properties"),
             "confidence": row.get::<f32, _>("confidence"),
@@ -243,7 +276,7 @@ async fn create_relationship(
     })?;
     
     Ok(Json(serde_json::json!({
-        "id": row.get::<String, _>("id"),
+        "id": row.get::<uuid::Uuid, _>("id").to_string(),
         "from_entity": from_entity,
         "to_entity": to_entity,
         "relationship_type": rel_type,
@@ -329,7 +362,7 @@ async fn search(
     
     let results: Vec<serde_json::Value> = rows.iter().map(|row| {
         serde_json::json!({
-            "id": row.get::<String, _>("id"),
+            "id": row.get::<uuid::Uuid, _>("id").to_string(),
             "name": row.get::<String, _>("name"),
             "entity_type": row.get::<String, _>("entity_type"),
             "properties": row.get::<serde_json::Value, _>("properties"),
