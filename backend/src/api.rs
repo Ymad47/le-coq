@@ -270,18 +270,56 @@ async fn search(
          FROM entities 
          WHERE to_tsvector('english', name) @@ plainto_tsquery('english', $1)".to_string();
     
+    let mut binds = vec![q.clone()];
+    let mut param_index = 2; // $1 is used for the search query
+    
     // Add filters if provided
     if let Some(filters) = &payload.filters {
-        // Here you would parse the filters and add them to the SQL query
-        // For example, if filters contains a "type" field, you could add:
-        // sql.push_str(" AND entity_type = $2");
-        tracing::info!("Filters provided but not yet implemented: {:?}", filters);
+        // Try to parse filters as JSON object
+        if let Some(obj) = filters.as_object() {
+            // Add entity_type filter
+            if let Some(entity_type) = obj.get("type").and_then(|v| v.as_str()) {
+                sql.push_str(&format!(" AND entity_type = ${}", param_index));
+                binds.push(entity_type.to_string());
+                param_index += 1;
+            }
+            
+            // Add confidence filter
+            if let Some(confidence) = obj.get("confidence").and_then(|v| v.as_f64()) {
+                sql.push_str(&format!(" AND (properties->>'confidence')::float >= ${}", param_index));
+                binds.push(confidence.to_string());
+                param_index += 1;
+            }
+            
+            // Add date range filter
+            if let Some(date_range) = obj.get("date_range").and_then(|v| v.as_object()) {
+                if let Some(start) = date_range.get("start").and_then(|v| v.as_str()) {
+                    sql.push_str(&format!(" AND created_at >= ${}", param_index));
+                    binds.push(start.to_string());
+                    param_index += 1;
+                }
+                if let Some(end) = date_range.get("end").and_then(|v| v.as_str()) {
+                    sql.push_str(&format!(" AND created_at <= ${}", param_index));
+                    binds.push(end.to_string());
+                    // Use param_index but don't increment since it's the last one in this block
+                    let _ = param_index;
+                }
+            }
+        }
+        
+        tracing::info!("Filters applied: {:?}", filters);
     }
     
     sql.push_str(" ORDER BY rank DESC LIMIT 50");
     
-    let rows = sqlx::query(&sql)
-        .bind(q)
+    // Bind parameters dynamically
+    let query = sqlx::query(&sql).bind(binds[0].clone());
+    let query = if binds.len() > 1 { query.bind(binds[1].clone()) } else { query };
+    let query = if binds.len() > 2 { query.bind(binds[2].clone()) } else { query };
+    let query = if binds.len() > 3 { query.bind(binds[3].clone()) } else { query };
+    let query = if binds.len() > 4 { query.bind(binds[4].clone()) } else { query };
+    
+    let rows = query
         .fetch_all(&state.postgres)
         .await
         .map_err(|e| {
