@@ -50,17 +50,61 @@ async fn list_entities(
     State(state): State<Arc<AppState>>,
     query: axum::extract::Query<EntityQuery>,
 ) -> Result<Json<Vec<EntityResponse>>, StatusCode> {
-    let sql = "SELECT id, name, entity_type, properties FROM entities ORDER BY created_at DESC LIMIT $1";
+    let mut sql = String::from("SELECT id, name, entity_type, properties FROM entities WHERE 1=1");
+    
+    if query.r#type.is_some() {
+        sql.push_str(" AND entity_type = $1");
+    }
+    
+    if query.q.is_some() {
+        sql.push_str(" AND (name ILIKE $2 OR properties::text ILIKE $2)");
+    }
+    
+    sql.push_str(" ORDER BY created_at DESC LIMIT $3");
+    
     let limit = query.limit.unwrap_or(100).min(1000) as i32;
     
-    let rows = sqlx::query(sql)
-        .bind(limit)
-        .fetch_all(&state.postgres)
-        .await
-        .map_err(|e| {
-            tracing::error!("DB error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let rows = if let (Some(t), Some(q_str)) = (&query.r#type, &query.q) {
+        sqlx::query(&sql)
+            .bind(t)
+            .bind(format!("%{}%", q_str))
+            .bind(limit)
+            .fetch_all(&state.postgres)
+            .await
+            .map_err(|e| {
+                tracing::error!("DB error: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    } else if let Some(t) = &query.r#type {
+        sqlx::query(&sql)
+            .bind(t)
+            .bind(limit)
+            .fetch_all(&state.postgres)
+            .await
+            .map_err(|e| {
+                tracing::error!("DB error: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    } else if let Some(q_str) = &query.q {
+        sqlx::query(&sql)
+            .bind(format!("%{}%", q_str))
+            .bind(limit)
+            .fetch_all(&state.postgres)
+            .await
+            .map_err(|e| {
+                tracing::error!("DB error: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    } else {
+        sqlx::query(&sql)
+            .bind(limit)
+            .fetch_all(&state.postgres)
+            .await
+            .map_err(|e| {
+                tracing::error!("DB error: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?
+    };
     
     let entities: Vec<EntityResponse> = rows.iter().map(|row| {
         EntityResponse {
@@ -220,21 +264,30 @@ async fn search(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let q = &payload.query;
     
-    let rows = sqlx::query(
-        "SELECT id, name, entity_type, properties, 
-                ts_rank(to_tsvector('english', name), plainto_tsquery('english', $1)) as rank
+    // Build the SQL query with optional filters
+    let mut sql = "SELECT id, name, entity_type, properties, 
+                   ts_rank(to_tsvector('english', name), plainto_tsquery('english', $1)) as rank
          FROM entities 
-         WHERE to_tsvector('english', name) @@ plainto_tsquery('english', $1)
-         ORDER BY rank DESC
-         LIMIT 50"
-    )
-    .bind(q)
-    .fetch_all(&state.postgres)
-    .await
-    .map_err(|e| {
-        tracing::error!("Search DB error: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+         WHERE to_tsvector('english', name) @@ plainto_tsquery('english', $1)".to_string();
+    
+    // Add filters if provided
+    if let Some(filters) = &payload.filters {
+        // Here you would parse the filters and add them to the SQL query
+        // For example, if filters contains a "type" field, you could add:
+        // sql.push_str(" AND entity_type = $2");
+        tracing::info!("Filters provided but not yet implemented: {:?}", filters);
+    }
+    
+    sql.push_str(" ORDER BY rank DESC LIMIT 50");
+    
+    let rows = sqlx::query(&sql)
+        .bind(q)
+        .fetch_all(&state.postgres)
+        .await
+        .map_err(|e| {
+            tracing::error!("Search DB error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     
     let results: Vec<serde_json::Value> = rows.iter().map(|row| {
         serde_json::json!({
@@ -254,7 +307,7 @@ async fn search(
 }
 
 async fn ingest_data(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let source = payload.get("source").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;

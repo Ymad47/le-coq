@@ -1,5 +1,9 @@
 //! Data models
 
+// Mark all structs and enums as allow(dead_code) since they're used in the Python plugins
+// and may not be directly referenced in the Rust backend
+#![allow(dead_code)]
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
