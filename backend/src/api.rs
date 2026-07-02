@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::sync::Arc;
 
+use crate::ingestion::{ingest_data as ingestion_handler, list_sources};
+
 use crate::AppState;
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -20,7 +22,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/entities/:id", get(get_entity))
         .route("/api/v1/relationships", get(list_relationships).post(create_relationship))
         .route("/api/v1/search", post(search))
-        .route("/api/v1/ingest", post(ingest_data))
+        .route("/api/v1/ingest", post(ingestion_handler))
+        .route("/api/v1/sources", get(list_sources))
         .with_state(state)
 }
 
@@ -379,22 +382,5 @@ async fn search(
         "query": q,
         "count": results.len(),
         "results": results,
-    })))
-}
-
-async fn ingest_data(
-    State(_state): State<Arc<AppState>>,
-    Json(payload): Json<serde_json::Value>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
-    let source = payload.get("source").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
-    let query_params = payload.get("query").cloned().unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-    
-    tracing::info!("Ingest request: source={}, query={}", source, query_params);
-    
-    Ok(Json(serde_json::json!({
-        "status": "queued",
-        "source": source,
-        "query": query_params,
-        "message": "Ingestion pipeline triggered (stub - implement Python plugin call)"
     })))
 }

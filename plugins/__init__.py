@@ -61,6 +61,9 @@ class Entity(BaseModel):
     
     class Config:
         arbitrary_types_allowed = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
     
     def __init__(self, **data):
         if 'created_at' not in data:

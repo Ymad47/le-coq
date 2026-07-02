@@ -3,6 +3,7 @@
 mod api;
 mod db;
 mod graph;
+mod plugin_bridge;
 mod ingestion;
 mod models;
 
