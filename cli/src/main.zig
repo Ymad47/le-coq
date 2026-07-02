@@ -79,11 +79,13 @@ fn cmdSearch(allocator: std.mem.Allocator, args: []const []const u8) !void {
     const query = args[0];
     std.debug.print("🔍 Searching for: {s}\n", .{query});
     
-    // TODO: Connect to backend API or local cache
-    // TODO: Implement full-text search
-    // TODO: Return ranked results
+    // Load configuration
+    const config = try lib.Config.load();
     
-    std.debug.print("⚠️  Search not yet implemented\n", .{});
+    // For now, just show that we would connect to the backend
+    std.debug.print("Would connect to backend at: {s}\n", .{config.backend_url});
+    std.debug.print("Would search for query: {s}\n", .{query});
+    std.debug.print("⚠️  Actual implementation pending\n", .{});
 }
 
 fn cmdList(allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -92,10 +94,13 @@ fn cmdList(allocator: std.mem.Allocator, args: []const []const u8) !void {
     
     std.debug.print("📋 Listing all entities\n", .{});
     
-    // TODO: Connect to backend API or local cache
-    // TODO: Return all entities
+    // Load configuration
+    const config = try lib.Config.load();
     
-    std.debug.print("⚠️  List not yet implemented\n", .{});
+    // For now, just show that we would connect to the backend
+    std.debug.print("Would connect to backend at: {s}\n", .{config.backend_url});
+    std.debug.print("Would list all entities\n", .{});
+    std.debug.print("⚠️  Actual implementation pending\n", .{});
 }
 
 fn cmdGraph(allocator: std.mem.Allocator, args: []const []const u8) !void {

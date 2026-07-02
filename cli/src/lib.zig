@@ -21,74 +21,16 @@ pub const Config = struct {
 pub const Entity = struct {
     id: []const u8,
     name: []const u8,
-    entity_type: EntityType,
-    aliases: [][]const u8,
+    entity_type: []const u8,
     properties: json.Value,
-    
-    pub const EntityType = enum {
-        person,
-        organization,
-        location,
-        event,
-        asset,
-    };
 };
 
-pub const Relationship = struct {
-    id: []const u8,
-    from_entity: []const u8,
-    to_entity: []const u8,
-    relationship_type: []const u8,
-    confidence: f32,
-    sources: [][]const u8,
+pub const SearchResponse = struct {
+    count: usize,
+    query: []const u8,
+    results: []Entity,
 };
 
-/// Memory-mapped file cache for offline mode
-pub const Cache = struct {
-    mmap: ?std.posix.MemMap = null,
-    
-    pub fn init(allocator: mem.Allocator) !Cache {
-        _ = allocator; // Suppress unused parameter warning
-        // TODO: Implement memory-mapped file loading
-        return Cache{};
-    }
-    
-    pub fn deinit(self: *Cache) void {
-        if (self.mmap) |mmap| {
-            std.posix.munmap(mmap);
-        }
-    }
-    
-    pub fn get(self: *Cache, key: []const u8) ?[]const u8 {
-        _ = self; // Suppress unused parameter warning
-        _ = key; // Suppress unused parameter warning
-        // TODO: Implement key-value lookup in mmap
-        return null;
-    }
-};
-
-/// Simple graph traversal
-pub fn bfsNeighbors(graph: *const Graph, start: []const u8, max_depth: u32) ![]Entity {
-    _ = graph;
-    _ = start;
-    _ = max_depth;
-    // TODO: Implement breadth-first search
-    return &.{};
-}
-
-pub const Graph = struct {
-    entities: std.AutoHashMap([]const u8, Entity),
-    relationships: std.ArrayList(Relationship),
-    
-    pub fn init(allocator: mem.Allocator) Graph {
-        return Graph{
-            .entities = std.AutoHashMap([]const u8, Entity).init(allocator),
-            .relationships = std.ArrayList(Relationship).init(allocator),
-        };
-    }
-    
-    pub fn deinit(self: *Graph) void {
-        self.entities.deinit();
-        self.relationships.deinit();
-    }
+pub const ListResponse = struct {
+    entities: []Entity,
 };
