@@ -10,6 +10,7 @@ use anyhow::Result;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -36,7 +37,7 @@ async fn main() -> Result<()> {
 
     let app = api::create_router(state).layer(TraceLayer::new_for_http());
 
-    let addr = config.bind_address;
+    let addr: SocketAddr = config.bind_address.parse()?;
     tracing::info!("🚀 Server listening on {}", addr);
     
     let listener = tokio::net::TcpListener::bind(&addr).await?;
