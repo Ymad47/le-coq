@@ -47,7 +47,8 @@ pub const Relationship = struct {
 pub const Cache = struct {
     mmap: ?std.posix.MemMap = null,
     
-    pub fn init(path: []const u8) !Cache {
+    pub fn init(allocator: mem.Allocator) !Cache {
+        _ = allocator; // Suppress unused parameter warning
         // TODO: Implement memory-mapped file loading
         return Cache{};
     }
@@ -59,6 +60,8 @@ pub const Cache = struct {
     }
     
     pub fn get(self: *Cache, key: []const u8) ?[]const u8 {
+        _ = self; // Suppress unused parameter warning
+        _ = key; // Suppress unused parameter warning
         // TODO: Implement key-value lookup in mmap
         return null;
     }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const lib = @import("lib.zig");
 
 // Le Coq CLI - Offline intelligence tool
 // Static binary, memory-safe, sovereign
@@ -21,6 +22,8 @@ pub fn main() !void {
     
     if (std.mem.eql(u8, command, "search")) {
         try cmdSearch(allocator, args[2..]);
+    } else if (std.mem.eql(u8, command, "list")) {
+        try cmdList(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "graph")) {
         try cmdGraph(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "ingest")) {
@@ -44,6 +47,7 @@ fn printHelp() !void {
         \\
         \\Commands:
         \\  search <query>     Search entities and relationships
+        \\  list               List all entities
         \\  graph <entity_id>  Visualize entity network (ASCII/JSON)
         \\  ingest <source>    Ingest data from OSINT source
         \\  export <format>    Export analysis (PDF/JSON/CSV)
@@ -56,6 +60,7 @@ fn printHelp() !void {
         \\
         \\Examples:
         \\  le-coq search "Emmanuel Macron"
+        \\  le-coq list
         \\  le-coq graph org_12345 --format json
         \\  le-coq ingest opencorporates --query "TotalEnergies"
         \\  le-coq export pdf --output report.pdf
@@ -79,6 +84,18 @@ fn cmdSearch(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // TODO: Return ranked results
     
     std.debug.print("⚠️  Search not yet implemented\n", .{});
+}
+
+fn cmdList(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    _ = allocator; // Suppress unused parameter warning
+    _ = args; // Suppress unused parameter warning
+    
+    std.debug.print("📋 Listing all entities\n", .{});
+    
+    // TODO: Connect to backend API or local cache
+    // TODO: Return all entities
+    
+    std.debug.print("⚠️  List not yet implemented\n", .{});
 }
 
 fn cmdGraph(allocator: std.mem.Allocator, args: []const []const u8) !void {
