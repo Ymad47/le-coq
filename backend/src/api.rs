@@ -25,7 +25,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
 }
 
 async fn health_check() -> &'static str {
-    "OK"
+    "Tout fonctionne  Bg !"
 }
 
 #[derive(Deserialize)]
@@ -205,8 +205,10 @@ async fn get_entity(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<EntityResponse>, StatusCode> {
+    let uuid_id = uuid::Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
+    
     let row = sqlx::query("SELECT id, name, entity_type, properties FROM entities WHERE id = $1")
-        .bind(&id)
+        .bind(uuid_id)
         .fetch_optional(&state.postgres)
         .await
         .map_err(|e| {
@@ -253,11 +255,14 @@ async fn create_relationship(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let from_entity = payload.get("from_entity").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
-    let to_entity = payload.get("to_entity").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+    let from_entity_str = payload.get("from_entity").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+    let to_entity_str = payload.get("to_entity").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
     let rel_type = payload.get("relationship_type").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
     let confidence = payload.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
     let properties = payload.get("properties").cloned().unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+    
+    let from_entity = uuid::Uuid::parse_str(from_entity_str).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let to_entity = uuid::Uuid::parse_str(to_entity_str).map_err(|_| StatusCode::BAD_REQUEST)?;
     
     let row = sqlx::query(
         "INSERT INTO relationships (from_entity, to_entity, relationship_type, properties, confidence)
@@ -277,8 +282,8 @@ async fn create_relationship(
     
     Ok(Json(serde_json::json!({
         "id": row.get::<uuid::Uuid, _>("id").to_string(),
-        "from_entity": from_entity,
-        "to_entity": to_entity,
+        "from_entity": from_entity_str,
+        "to_entity": to_entity_str,
         "relationship_type": rel_type,
         "confidence": confidence,
     })))
