@@ -1,0 +1,28 @@
+[Unit]
+Description=Le Coq Backend API
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=yaya
+WorkingDirectory=/home/yaya/le-coq
+Environment="BIND_ADDRESS=0.0.0.0:8000"
+Environment="DATABASE_URL=postgresql://lecoq:lecoq_dev_password@localhost:5432/lecoq"
+Environment="API_KEY_HEADER=X-API-Key"
+Environment="RUST_LOG=le_coq=info,tower_http=debug"
+ExecStart=/home/yaya/le-coq/target/release/le-coq-backend
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=le-coq-backend
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/yaya/le-coq/logs
+
+[Install]
+WantedBy=multi-user.target

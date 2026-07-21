@@ -175,7 +175,7 @@ export ACLED_API_KEY=your_key
 
 ## Contact
 
-- **Repo:** https://codeberg.org/ymad/le-coq
+- **Repo:** https://github.com/Ymad47/le-coq
 - **Issues:** Codeberg issue tracker
 - **Email:** ymad@ymad.fr
 

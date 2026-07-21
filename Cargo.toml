@@ -18,7 +18,6 @@ tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Database
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json"] }
-neo4rs = "0.7"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -36,9 +35,6 @@ lazy_static = "1"
 # Geospatial
 geo = "0.28"
 geo-types = "0.7"
-
-# Search client (Meilisearch)
-meilisearch-sdk = "0.24"
 
 [dev-dependencies]
 mockall = "0.12"

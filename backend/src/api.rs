@@ -6,12 +6,13 @@ use axum::{
     extract::State,
     response::Json,
     http::StatusCode,
+    middleware,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::sync::Arc;
 
-use crate::ingestion::{ingest_data as ingestion_handler, list_sources};
+use crate::ingestion::{ingest_data, list_sources};
 
 use crate::AppState;
 
@@ -22,13 +23,36 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/entities/:id", get(get_entity))
         .route("/api/v1/relationships", get(list_relationships).post(create_relationship))
         .route("/api/v1/search", post(search))
-        .route("/api/v1/ingest", post(ingestion_handler))
+        .route("/api/v1/ingest", post(ingest_data))
         .route("/api/v1/sources", get(list_sources))
+        .layer(middleware::from_fn_with_state(state.clone(), api_key_auth))
         .with_state(state)
 }
 
 async fn health_check() -> &'static str {
     "Tout fonctionne  Bg !"
+}
+
+async fn api_key_auth(
+    State(state): State<Arc<AppState>>,
+    req: axum::http::Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    // Skip auth for health check
+    if req.uri().path() == "/health" {
+        return Ok(next.run(req).await);
+    }
+    
+    // Check for API key in header
+    let api_key = req
+        .headers()
+        .get(&state.config.api_key_header)
+        .and_then(|v| v.to_str().ok());
+    
+    match api_key {
+        Some(key) if !key.is_empty() => Ok(next.run(req).await),
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
 }
 
 #[derive(Deserialize)]

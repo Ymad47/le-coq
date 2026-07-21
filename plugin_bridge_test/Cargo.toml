@@ -1,0 +1,16 @@
+[package]
+name = "plugin-bridge-test"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "plugin-bridge-test"
+path = "src/main.rs"
+
+[[bin]]
+name = "list-plugins-test"
+path = "src/list_plugins.rs"
