@@ -1,6 +1,6 @@
 //! Data ingestion pipelines
 
-use crate::plugin_bridge::{call_python_plugin, list_python_plugins};
+use crate::plugin_bridge::{call_plugin_method, list_plugins};
 use crate::AppState;
 use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
@@ -29,7 +29,7 @@ pub async fn ingest_data(
     tracing::info!("Ingesting data from source: {}", payload.source);
     
     // Validate the source exists
-    let plugins = list_python_plugins().map_err(|e| {
+    let plugins = list_plugins().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to list plugins: {}", e),
@@ -44,7 +44,7 @@ pub async fn ingest_data(
     }
     
     // Call the Python plugin
-    let result = call_python_plugin(&payload.source, &payload.query).map_err(|e| {
+    let result = call_plugin_method(&payload.source, "fetch", &payload.query).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to call plugin: {}", e),
@@ -73,7 +73,7 @@ pub async fn ingest_data(
 pub async fn list_sources(
     State(_state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<String>>, (StatusCode, String)> {
-    let plugins = list_python_plugins().map_err(|e| {
+    let plugins = list_plugins().map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to list plugins: {}", e),

@@ -24,6 +24,10 @@ async fn main() -> Result<()> {
 
     tracing::info!("🐓 Le Coq backend starting...");
 
+    // Initialize Python interpreter (PyO3)
+    plugin_bridge::init_python().map_err(|e| anyhow::anyhow!("Failed to init Python: {}", e))?;
+    tracing::info!("🐍 Python interpreter initialized");
+
     let config = Config::from_env()?;
     let postgres_pool = db::postgres::create_pool(&config.database_url).await?;
     

@@ -5,6 +5,10 @@ edition = "2021"
 description = "Geopolitical intelligence platform - Rust backend core"
 license = "AGPL-3.0"
 
+[lib]
+name = "le_coq_backend"
+path = "backend/src/lib.rs"
+
 [[bin]]
 name = "le-coq-backend"
 path = "backend/src/main.rs"
@@ -22,6 +26,9 @@ sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Python integration (PyO3)
+pyo3 = { version = "0.20", features = ["auto-initialize"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }

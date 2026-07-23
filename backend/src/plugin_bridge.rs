@@ -1,4 +1,8 @@
-use std::process::Command;
+//! PyO3 Bridge - Native Rust ↔ Python integration
+//! Replaces fragile spawn-based bridge with embedded Python interpreter
+
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use serde_json::Value;
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -8,126 +12,401 @@ pub struct PluginResult {
     pub error: Option<String>,
 }
 
-pub fn call_python_plugin(source: &str, query: &Value) -> Result<PluginResult, String> {
-    // Create a temporary script to call the plugin
-    let script = format!(
-        r#"
-import sys
-import json
-import asyncio
-sys.path.insert(0, '/home/yaya/le-coq')
-
-async def main():
-    try:
-        # Import the specific plugin to register it
-        if '{}' == 'wikipedia':
-            from plugins.sources.wikipedia import WikipediaPlugin
-            plugin = WikipediaPlugin({{}})
-        else:
-            raise Exception('Unknown plugin: {}')
-        
-        result = await plugin.fetch({})
-        
-        # Serialize the result properly
-        serialized_result = []
-        for item in result:
-            # Convert any datetime objects to strings
-            if hasattr(item, 'created_at') and item.created_at:
-                item.created_at = item.created_at.isoformat()
-            serialized_result.append(item)
-        
-        # Return the result as JSON
-        print(json.dumps({{
-            'success': True,
-            'data': serialized_result
-        }}, default=str))
-    except Exception as e:
-        print(json.dumps({{
-            'success': False,
-            'error': str(e)
-        }}))
-
-asyncio.run(main())
-"#,
-        source, source, query
-    );
-
-    let output = Command::new("/home/yaya/le-coq/venv/bin/python")
-        .arg("-c")
-        .arg(script)
-        .output()
-        .map_err(|e| format!("Failed to execute Python command: {}", e))?;
-
-    if !output.status.success() {
-        return Err(format!(
-            "Python command failed with exit code {}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    
-    // Parse the JSON response
-    let result: PluginResult = serde_json::from_str(&stdout)
-        .map_err(|e| format!("Failed to parse Python response: {}", e))?;
-
-    Ok(result)
+/// Initialize Python interpreter (called once at startup)
+pub fn init_python() -> Result<(), String> {
+    Python::with_gil(|py| {
+        // Add le-coq root to sys.path
+        let sys = py
+            .import("sys")
+            .map_err(|e| format!("Failed to import sys: {}", e))?;
+        let path = sys
+            .getattr("path")
+            .map_err(|e| format!("Failed to get sys.path: {}", e))?;
+        let path_list = path
+            .downcast::<PyList>()
+            .map_err(|e| format!("Failed to downcast path: {}", e))?;
+        path_list
+            .append("/home/yaya/le-coq")
+            .map_err(|e| format!("Failed to append to path: {}", e))?;
+        Ok(())
+    })
 }
 
-pub fn list_python_plugins() -> Result<Vec<String>, String> {
-    let script = r#"
-import sys
-import json
-sys.path.insert(0, '/home/yaya/le-coq')
+/// Call a Python plugin method with arguments
+pub fn call_plugin_method(
+    plugin_name: &str,
+    method: &str,
+    args: &Value,
+) -> Result<PluginResult, String> {
+    Python::with_gil(|py| {
+        // Import the plugins module
+        let plugins_module = py
+            .import("plugins")
+            .map_err(|e| format!("Failed to import plugins module: {}", e))?;
 
-try:
-    # Import plugins to register them
-    from plugins.sources.wikipedia import WikipediaPlugin
-    
-    # Create an instance and register it
-    plugin = WikipediaPlugin({})
-    
-    from plugins import list_plugins
-    plugins = list_plugins()
-    print(json.dumps(list(plugins)))
-except Exception as e:
-    print(json.dumps({'error': str(e)}))
-"#;
+        // Call the sync wrapper method
+        let args_dict = json_to_pydict(py, args)
+            .map_err(|e| e.to_string())?;
+        let result_obj = plugins_module
+            .getattr("call_plugin_method_sync")
+            .map_err(|e| format!("Failed to get call_plugin_method_sync: {}", e))?
+            .call1((plugin_name, method, args_dict))
+            .map_err(|e| {
+                format!("Failed to call method '{}.{}': {}", plugin_name, method, e)
+            })?;
 
-    let output = Command::new("/home/yaya/le-coq/venv/bin/python")
-        .arg("-c")
-        .arg(script)
-        .output()
-        .map_err(|e| format!("Failed to execute Python command: {}", e))?;
+        // Convert result to JSON
+        let result_value = pydict_to_json(result_obj)
+            .map_err(|e| format!("Failed to convert Python result to JSON: {}", e))?;
 
-    if !output.status.success() {
-        return Err(format!(
-            "Python command failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
+        Ok(PluginResult {
+            success: true,
+            data: Some(result_value),
+            error: None,
+        })
+    })
+}
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    
-    // Try to parse as JSON array
-    if let Ok(plugins) = serde_json::from_str::<Vec<String>>(&stdout) {
-        return Ok(plugins);
-    }
-    
-    // Try to parse as JSON object with error
-    if let Ok(error_obj) = serde_json::from_str::<serde_json::Value>(&stdout) {
-        if let Some(error) = error_obj.get("error") {
-            return Err(error.as_str().unwrap_or("Unknown error").to_string());
+/// List all available plugins
+pub fn list_plugins() -> Result<Vec<String>, String> {
+    Python::with_gil(|py| {
+        // Import the plugins registry
+        let plugins_module = py
+            .import("plugins")
+            .map_err(|e| format!("Failed to import plugins module: {}", e))?;
+
+        // Call list_plugins()
+        let result = plugins_module
+            .call_method0("list_plugins")
+            .map_err(|e| format!("Failed to call list_plugins: {}", e))?;
+
+        // Convert to Vec<String>
+        let list = result
+            .downcast::<PyList>()
+            .map_err(|e| format!("list_plugins did not return a list: {}", e))?;
+
+        let mut plugins = Vec::new();
+        for item in list.iter() {
+            if let Ok(s) = item.extract::<String>() {
+                plugins.push(s);
+            }
         }
-    }
-    
-    // Fallback: split by lines
-    let plugins: Vec<String> = stdout
-        .lines()
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect();
 
-    Ok(plugins)
+        Ok(plugins)
+    })
+}
+
+/// Validate a plugin connection
+pub fn validate_plugin(plugin_name: &str) -> Result<bool, String> {
+    Python::with_gil(|py| {
+        // Import the plugins module
+        let plugins_module = py
+            .import("plugins")
+            .map_err(|e| format!("Failed to import plugins module: {}", e))?;
+
+        // Call the sync wrapper method
+        let result_obj = plugins_module
+            .getattr("call_plugin_method_sync")
+            .map_err(|e| format!("Failed to get call_plugin_method_sync: {}", e))?
+            .call1((plugin_name, "validate", PyDict::new(py)))
+            .map_err(|e| {
+                format!("Failed to call validate on '{}': {}", plugin_name, e)
+            })?;
+
+        result_obj
+            .extract::<bool>()
+            .map_err(|e| format!("validate() did not return a bool: {}", e))
+    })
+}
+
+/// Helper: Capitalize first letter (wikipedia → Wikipedia)
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+/// Helper: Convert serde_json::Value to PyDict
+fn json_to_pydict(py: Python, value: &Value) -> PyResult<PyObject> {
+    match value {
+        Value::Object(map) => {
+            let dict = PyDict::new(py);
+            for (k, v) in map {
+                dict.set_item(k, json_to_pydict(py, v)?)?;
+            }
+            Ok(dict.into())
+        }
+        Value::Array(arr) => {
+            let list = PyList::empty(py);
+            for item in arr {
+                list.append(json_to_pydict(py, item)?)?;
+            }
+            Ok(list.into())
+        }
+        Value::String(s) => Ok(s.into_py(py)),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(i.into_py(py))
+            } else if let Some(f) = n.as_f64() {
+                Ok(f.into_py(py))
+            } else {
+                Ok(0.into_py(py))
+            }
+        }
+        Value::Bool(b) => Ok(b.into_py(py)),
+        Value::Null => Ok(py.None()),
+    }
+}
+
+/// Helper: Convert Python object to serde_json::Value
+fn pydict_to_json(obj: &PyAny) -> PyResult<Value> {
+    if obj.is_none() {
+        return Ok(Value::Null);
+    }
+
+    if let Ok(b) = obj.extract::<bool>() {
+        return Ok(Value::Bool(b));
+    }
+
+    if let Ok(i) = obj.extract::<i64>() {
+        return Ok(Value::Number(i.into()));
+    }
+
+    if let Ok(f) = obj.extract::<f64>() {
+        return Ok(serde_json::Number::from_f64(f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null));
+    }
+
+    if let Ok(s) = obj.extract::<String>() {
+        return Ok(Value::String(s));
+    }
+
+    if let Ok(list) = obj.downcast::<PyList>() {
+        let mut arr = Vec::new();
+        for item in list.iter() {
+            arr.push(pydict_to_json(item)?);
+        }
+        return Ok(Value::Array(arr));
+    }
+
+    if let Ok(dict) = obj.downcast::<PyDict>() {
+        let mut map = serde_json::Map::new();
+        for (key, value) in dict.iter() {
+            let k = key.extract::<String>()?;
+            let v = pydict_to_json(value)?;
+            map.insert(k, v);
+        }
+        return Ok(Value::Object(map));
+    }
+
+    // Fallback: try to convert to string
+    if let Ok(s) = obj.str() {
+        return Ok(Value::String(s.to_string_lossy().into()));
+    }
+
+    Ok(Value::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_capitalize_first() {
+        assert_eq!(capitalize_first("wikipedia"), "Wikipedia");
+        assert_eq!(capitalize_first("acled"), "Acled");
+        assert_eq!(capitalize_first("gdelt"), "Gdelt");
+        assert_eq!(capitalize_first("opencorporates"), "Opencorporates");
+        assert_eq!(capitalize_first(""), "");
+    }
+
+    #[test]
+    fn test_json_to_pydict_string() {
+        Python::with_gil(|py| {
+            let value = Value::String("hello".to_string());
+            let result = json_to_pydict(py, &value).unwrap();
+            let s = result.extract::<String>(py).unwrap();
+            assert_eq!(s, "hello");
+        });
+    }
+
+    #[test]
+    fn test_json_to_pydict_number() {
+        Python::with_gil(|py| {
+            let value = Value::Number(serde_json::Number::from(42));
+            let result = json_to_pydict(py, &value).unwrap();
+            let n = result.extract::<i64>(py).unwrap();
+            assert_eq!(n, 42);
+        });
+    }
+
+    #[test]
+    fn test_json_to_pydict_bool() {
+        Python::with_gil(|py| {
+            let value = Value::Bool(true);
+            let result = json_to_pydict(py, &value).unwrap();
+            let b = result.extract::<bool>(py).unwrap();
+            assert_eq!(b, true);
+        });
+    }
+
+    #[test]
+    fn test_json_to_pydict_null() {
+        Python::with_gil(|py| {
+            let value = Value::Null;
+            let result = json_to_pydict(py, &value).unwrap();
+            assert!(result.is_none(py));
+        });
+    }
+
+    #[test]
+    fn test_json_to_pydict_array() {
+        Python::with_gil(|py| {
+            let value = Value::Array(vec![
+                Value::Number(serde_json::Number::from(1)),
+                Value::Number(serde_json::Number::from(2)),
+                Value::Number(serde_json::Number::from(3)),
+            ]);
+            let result = json_to_pydict(py, &value).unwrap();
+            let list = result.downcast::<PyList>(py).unwrap();
+            assert_eq!(list.len(), 3);
+            assert_eq!(list.get_item(0).unwrap().extract::<i64>().unwrap(), 1);
+        });
+    }
+
+    #[test]
+    fn test_json_to_pydict_object() {
+        Python::with_gil(|py| {
+            let mut map = serde_json::Map::new();
+            map.insert("key".to_string(), Value::String("value".to_string()));
+            map.insert("count".to_string(), Value::Number(serde_json::Number::from(10)));
+            let value = Value::Object(map);
+            let result = json_to_pydict(py, &value).unwrap();
+            let dict = result.downcast::<PyDict>(py).unwrap();
+            assert_eq!(
+                dict.get_item("key")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "value"
+            );
+            assert_eq!(
+                dict.get_item("count")
+                    .unwrap()
+                    .unwrap()
+                    .extract::<i64>()
+                    .unwrap(),
+                10
+            );
+        });
+    }
+
+    #[test]
+    fn test_pydict_to_json_string() {
+        Python::with_gil(|py| {
+            let obj: PyObject = "hello".into_py(py);
+            let result = pydict_to_json(obj.as_ref(py)).unwrap();
+            assert_eq!(result, Value::String("hello".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_pydict_to_json_number() {
+        Python::with_gil(|py| {
+            let obj = 42i64.into_py(py);
+            let result = pydict_to_json(obj.as_ref(py)).unwrap();
+            assert_eq!(result, Value::Number(serde_json::Number::from(42)));
+        });
+    }
+
+    #[test]
+    fn test_pydict_to_json_bool() {
+        Python::with_gil(|py| {
+            let obj = true.into_py(py);
+            let result = pydict_to_json(obj.as_ref(py)).unwrap();
+            assert_eq!(result, Value::Bool(true));
+        });
+    }
+
+    #[test]
+    fn test_pydict_to_json_null() {
+        Python::with_gil(|py| {
+            let obj = py.None();
+            let result = pydict_to_json(obj.as_ref(py)).unwrap();
+            assert_eq!(result, Value::Null);
+        });
+    }
+
+    #[test]
+    fn test_pydict_to_json_list() {
+        Python::with_gil(|py| {
+            let list = PyList::new(py, &[1i64, 2i64, 3i64]);
+            let result = pydict_to_json(list.as_ref()).unwrap();
+            assert_eq!(result, Value::Array(vec![
+                Value::Number(serde_json::Number::from(1)),
+                Value::Number(serde_json::Number::from(2)),
+                Value::Number(serde_json::Number::from(3)),
+            ]));
+        });
+    }
+
+    #[test]
+    fn test_pydict_to_json_dict() {
+        Python::with_gil(|py| {
+            let dict = PyDict::new(py);
+            dict.set_item("name", "test").unwrap();
+            dict.set_item("value", 123i64).unwrap();
+            let result = pydict_to_json(dict.as_ref()).unwrap();
+            let obj = result.as_object().unwrap();
+            assert_eq!(obj.get("name").unwrap(), &Value::String("test".to_string()));
+            assert_eq!(obj.get("value").unwrap(), &Value::Number(serde_json::Number::from(123)));
+        });
+    }
+
+    #[test]
+    fn test_list_plugins() {
+        // Initialize Python first
+        init_python().expect("Failed to init Python");
+
+        let plugins = list_plugins().expect("Failed to list plugins");
+        assert!(!plugins.is_empty(), "Should have at least one plugin");
+
+        // Check known plugins exist (wikipedia, gdelt, opencorporates)
+        assert!(plugins.contains(&"wikipedia".to_string()));
+        assert!(plugins.contains(&"gdelt".to_string()));
+        assert!(plugins.contains(&"opencorporates".to_string()));
+    }
+
+    #[test]
+    fn test_validate_plugin_wikipedia() {
+        init_python().expect("Failed to init Python");
+        
+        let valid = validate_plugin("wikipedia").expect("Failed to validate plugin");
+        // Wikipedia plugin should be valid (no API key required)
+        assert!(valid, "Wikipedia plugin should be valid");
+    }
+
+    #[test]
+    fn test_call_plugin_method_wikipedia_fetch() {
+        init_python().expect("Failed to init Python");
+        
+        let args = serde_json::json!({
+            "query": "Rust programming language",
+            "limit": 1
+        });
+        
+        let result = call_plugin_method("wikipedia", "fetch", &args)
+            .expect("Failed to call plugin method");
+        
+        assert!(result.success, "Plugin call should succeed");
+        assert!(result.data.is_some(), "Should return data");
+        
+        let data = result.data.unwrap();
+        // Fetch returns a list of results
+        assert!(data.is_array() || data.is_object(), "Data should be array or object");
+    }
 }
