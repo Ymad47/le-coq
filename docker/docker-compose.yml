@@ -1,50 +1,37 @@
-version: '3.8'
-
 services:
-  # PostgreSQL + PostGIS + pgvector
+  # PostgreSQL + pgvector
   postgres:
-    image: pgvector/pgvector:pg15
+    image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: lecoq
-      POSTGRES_PASSWORD: lecoq_dev_password
-      POSTGRES_DB: lecoq
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: le_coq
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/migrations:/docker-entrypoint-initdb.d
+      - ./migrations:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lecoq"]
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   # Backend API (Rust)
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: backend/Dockerfile
     environment:
       BIND_ADDRESS: 0.0.0.0:8000
-      DATABASE_URL: postgresql://lecoq:lecoq_dev_password@postgres:5432/lecoq
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/le_coq
     ports:
       - "8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
-    volumes:
-      - ./backend/src:/app/src
-      - ./backend/migrations:/app/migrations
-
-  # Frontend (Svelte)
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
+    restart: unless-stopped
 
 volumes:
   postgres_data:

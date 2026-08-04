@@ -119,15 +119,6 @@ pub fn validate_plugin(plugin_name: &str) -> Result<bool, String> {
     })
 }
 
-/// Helper: Capitalize first letter (wikipedia → Wikipedia)
-fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-    }
-}
-
 /// Helper: Convert serde_json::Value to PyDict
 fn json_to_pydict(py: Python, value: &Value) -> PyResult<PyObject> {
     match value {

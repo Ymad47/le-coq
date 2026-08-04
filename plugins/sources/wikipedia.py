@@ -38,7 +38,8 @@ class WikipediaPlugin(DataSourcePlugin):
         """Search for Wikipedia pages using the correct API endpoint"""
         results = []
         
-        search_query = query.get("q", "")
+        # Support both 'q' and 'query' parameter names
+        search_query = query.get("q") or query.get("query", "")
         if not search_query:
             return results
             

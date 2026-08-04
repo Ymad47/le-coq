@@ -2,7 +2,7 @@
 
 -- Create entities table
 CREATE TABLE IF NOT EXISTS entities (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id TEXT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     entity_type VARCHAR(100) NOT NULL,
     aliases TEXT[],
@@ -15,8 +15,8 @@ CREATE TABLE IF NOT EXISTS entities (
 -- Create relationships table
 CREATE TABLE IF NOT EXISTS relationships (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    from_entity UUID NOT NULL REFERENCES entities(id),
-    to_entity UUID NOT NULL REFERENCES entities(id),
+    from_entity TEXT NOT NULL REFERENCES entities(id),
+    to_entity TEXT NOT NULL REFERENCES entities(id),
     relationship_type VARCHAR(100) NOT NULL,
     properties JSONB,
     confidence REAL DEFAULT 1.0 CHECK (confidence >= 0.0 AND confidence <= 1.0),

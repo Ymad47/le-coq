@@ -82,6 +82,26 @@ class Relationship(BaseModel):
     sources: List[str] = []
 
 
+class Event(BaseModel):
+    """Standard event model"""
+    id: str
+    title: str
+    date: datetime
+    location: str
+    participants: List[str] = []
+    event_type: str = "general"
+    description: str = ""
+    sources: List[str] = []
+    severity: str = "low"
+    properties: Dict[str, Any] = {}
+    
+    class Config:
+        arbitrary_types_allowed = True
+        json_encoders = {
+            datetime: lambda v: v.isoformat() if v else None
+        }
+
+
 # Plugin registry
 _plugins: Dict[str, DataSourcePlugin] = {}
 

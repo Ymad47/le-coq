@@ -27,8 +27,8 @@ sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "uuid"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Python integration (PyO3)
-pyo3 = { version = "0.20", features = ["auto-initialize"] }
+# Python integration (PyO3) - ABI3 for Python 3.11+ compatibility
+pyo3 = { version = "0.20", features = ["auto-initialize", "abi3-py311"] }
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
