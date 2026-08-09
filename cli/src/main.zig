@@ -301,8 +301,8 @@ fn pluginsTest(stdout: anytype, api_url: []const u8, api_key: []const u8, args: 
     const endpoint = try std.fmt.allocPrint(allocator, "{s}/api/v1/ingest", .{api_url});
     defer allocator.free(endpoint);
     
-    // Build JSON body: {"source": "...", "query": "..."}
-    const body = try std.fmt.allocPrint(allocator, "{{\"source\":\"{s}\",\"query\":\"{s}\"}}", .{source, query.?});
+    // Build JSON body: {"source": "...", "query": {"q": "..."}}
+    const body = try std.fmt.allocPrint(allocator, "{{\"source\":\"{s}\",\"query\":{{\"q\":\"{s}\"}}}}", .{source, query.?});
     defer allocator.free(body);
     
     try stdout.print("🧪 Testing plugin '{s}' with query: {s}\n\n", .{source, query.?});
