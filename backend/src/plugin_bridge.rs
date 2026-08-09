@@ -15,7 +15,7 @@ pub struct PluginResult {
 /// Initialize Python interpreter (called once at startup)
 pub fn init_python() -> Result<(), String> {
     Python::with_gil(|py| {
-        // Add le-coq root to sys.path
+        // Add le-coq paths to sys.path
         let sys = py
             .import("sys")
             .map_err(|e| format!("Failed to import sys: {}", e))?;
@@ -25,9 +25,18 @@ pub fn init_python() -> Result<(), String> {
         let path_list = path
             .downcast::<PyList>()
             .map_err(|e| format!("Failed to downcast path: {}", e))?;
+        
+        // Add paths in order: plugins site-packages first (for deps), then plugins, then le-coq root
+        path_list
+            .append("/home/yaya/le-coq/plugins/.venv/lib/python3.11/site-packages")
+            .map_err(|e| format!("Failed to append site-packages: {}", e))?;
+        path_list
+            .append("/home/yaya/le-coq/plugins")
+            .map_err(|e| format!("Failed to append plugins: {}", e))?;
         path_list
             .append("/home/yaya/le-coq")
-            .map_err(|e| format!("Failed to append to path: {}", e))?;
+            .map_err(|e| format!("Failed to append le-coq root: {}", e))?;
+        
         Ok(())
     })
 }
@@ -199,6 +208,15 @@ fn pydict_to_json(obj: &PyAny) -> PyResult<Value> {
     }
 
     Ok(Value::Null)
+}
+
+/// Capitalize first letter of a string
+fn capitalize_first(s: &str) -> String {
+    if s.is_empty() {
+        return String::new();
+    }
+    let mut chars = s.chars();
+    chars.next().unwrap().to_uppercase().collect::<String>() + chars.as_str()
 }
 
 #[cfg(test)]

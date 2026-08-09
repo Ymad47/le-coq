@@ -97,7 +97,7 @@ async fn list_entities(
             
         let entities: Vec<EntityResponse> = rows.iter().map(|row| {
             EntityResponse {
-                id: row.get::<uuid::Uuid, _>("id").to_string(),
+                id: row.get::<String, _>("id"),
                 name: row.get("name"),
                 r#type: row.get("entity_type"),
                 properties: row.get("properties"),
@@ -121,7 +121,7 @@ async fn list_entities(
             
         let entities: Vec<EntityResponse> = rows.iter().map(|row| {
             EntityResponse {
-                id: row.get::<uuid::Uuid, _>("id").to_string(),
+                id: row.get::<String, _>("id"),
                 name: row.get("name"),
                 r#type: row.get("entity_type"),
                 properties: row.get("properties"),
@@ -168,7 +168,7 @@ async fn list_entities(
             
         let entities: Vec<EntityResponse> = rows.iter().map(|row| {
             EntityResponse {
-                id: row.get::<uuid::Uuid, _>("id").to_string(),
+                id: row.get::<String, _>("id"),
                 name: row.get("name"),
                 r#type: row.get("entity_type"),
                 properties: row.get("properties"),
@@ -246,7 +246,7 @@ async fn get_entity(
     
     row.map(|r| {
         Json(EntityResponse {
-            id: r.get::<uuid::Uuid, _>("id").to_string(),
+            id: r.get::<String, _>("id"),
             name: r.get("name"),
             r#type: r.get("entity_type"),
             properties: r.get("properties"),
@@ -267,9 +267,9 @@ async fn list_relationships(
     
     let rels: Vec<serde_json::Value> = rows.iter().map(|row| {
         serde_json::json!({
-            "id": row.get::<uuid::Uuid, _>("id").to_string(),
-            "from_entity": row.get::<uuid::Uuid, _>("from_entity").to_string(),
-            "to_entity": row.get::<uuid::Uuid, _>("to_entity").to_string(),
+            "id": row.get::<String, _>("id"),
+            "from_entity": row.get::<String, _>("from_entity"),
+            "to_entity": row.get::<String, _>("to_entity"),
             "relationship_type": row.get::<String, _>("relationship_type"),
             "properties": row.get::<serde_json::Value, _>("properties"),
             "confidence": row.get::<f32, _>("confidence"),
@@ -309,7 +309,7 @@ async fn create_relationship(
     })?;
     
     Ok(Json(serde_json::json!({
-        "id": row.get::<uuid::Uuid, _>("id").to_string(),
+        "id": row.get::<String, _>("id"),
         "from_entity": from_entity_str,
         "to_entity": to_entity_str,
         "relationship_type": rel_type,
@@ -395,7 +395,7 @@ async fn search(
     
     let results: Vec<serde_json::Value> = rows.iter().map(|row| {
         serde_json::json!({
-            "id": row.get::<uuid::Uuid, _>("id").to_string(),
+            "id": row.get::<String, _>("id"),
             "name": row.get::<String, _>("name"),
             "entity_type": row.get::<String, _>("entity_type"),
             "properties": row.get::<serde_json::Value, _>("properties"),

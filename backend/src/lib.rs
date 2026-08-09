@@ -7,6 +7,7 @@ pub mod graph;
 pub mod ingestion;
 pub mod models;
 pub mod plugin_bridge;
+pub mod poller;
 
 pub use plugin_bridge::*;
 
