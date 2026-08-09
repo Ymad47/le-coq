@@ -7,6 +7,21 @@ const lib = @import("lib.zig");
 //
 // MODE DEBUG: Query backend API, inspect plugins, debug graph
 
+// Helper: check if arg matches long or short form
+fn isCmd(arg: []const u8, long_name: []const u8, short_name: []const u8) bool {
+    // Check exact matches first
+    if (std.mem.eql(u8, arg, long_name) or std.mem.eql(u8, arg, short_name)) return true;
+    // Check --long form
+    if (arg.len > 2 and arg[0] == '-' and arg[1] == '-') {
+        if (std.mem.eql(u8, arg[2..], long_name)) return true;
+    }
+    // Check -s form
+    if (arg.len == 2 and arg[0] == '-') {
+        if (std.mem.eql(u8, arg[1..], short_name)) return true;
+    }
+    return false;
+}
+
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     const stderr = std.io.getStdErr().writer();
@@ -22,15 +37,15 @@ pub fn main() !void {
 
     if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "-h") or std.mem.eql(u8, command, "--help")) {
         try showHelp(stdout);
-    } else if (std.mem.eql(u8, command, "query")) {
+    } else if (isCmd(command, "query", "q")) {
         try queryCommand(stdout, stderr, args[2..]);
-    } else if (std.mem.eql(u8, command, "plugins")) {
+    } else if (isCmd(command, "plugins", "p")) {
         try pluginsCommand(stdout, stderr, args[2..]);
-    } else if (std.mem.eql(u8, command, "graph")) {
+    } else if (isCmd(command, "graph", "g")) {
         try graphCommand(stdout, stderr, args[2..]);
-    } else if (std.mem.eql(u8, command, "api")) {
+    } else if (isCmd(command, "api", "a")) {
         try apiCommand(stdout, stderr, args[2..]);
-    } else if (std.mem.eql(u8, command, "health")) {
+    } else if (isCmd(command, "health", "h")) {
         try healthCommand(stdout);
     } else {
         try stderr.print("❌ Unknown command: {s}\n\n", .{command});
@@ -50,23 +65,23 @@ fn showHelp(writer: anytype) !void {
         \\  le-coq <COMMAND> [OPTIONS]
         \\
         \\COMMANDS:
-        \\  query <resource> [OPTIONS]    Query entities, relations, search
-        \\  plugins <subcommand>          List, test, validate plugins
-        \\  graph <subcommand>            Inspect graph (stats, neighbors)
-        \\  api <method> <endpoint>       Raw API calls (get/post)
-        \\  health                        Check backend health
-        \\  help                          Show this help
+        \\  q[ery] <resource> [OPTIONS]    Query entities, relations, search
+        \\  p[lugins] <subcommand>          List, test, validate plugins
+        \\  g[raph] <subcommand>            Inspect graph (stats, neighbors)
+        \\  a[pi] <method> <endpoint>       Raw API calls (get/post)
+        \\  h[ealth]                        Check backend health
+        \\  help                            Show this help
         \\
         \\QUERY RESOURCES:
-        \\  entities      --type <type> --q <query> --limit <n>
-        \\  relations     --from <id> --to <id> --limit <n>
-        \\  search        --q <query> --limit <n>
-        \\  sources       (no options)
+        \\  e[ntities]      --type <type> --q <query> --limit <n>
+        \\  r[elations]     --from <id> --to <id> --limit <n>
+        \\  s[earch]        --q <query> --limit <n>
+        \\  src[ources]     (no options)
         \\
         \\PLUGIN SUBCOMMANDS:
-        \\  list                          List available plugins
-        \\  test <name> --query <q>       Test a plugin
-        \\  validate <name>               Validate plugin config
+        \\  list | l                      List available plugins
+        \\  t[est] <name> --query <q>     Test a plugin
+        \\  v[alidate] <name>             Validate plugin config
         \\
         \\GRAPH SUBCOMMANDS:
         \\  stats                         Graph statistics
@@ -77,13 +92,13 @@ fn showHelp(writer: anytype) !void {
         \\  post <endpoint> --body <json> POST request
         \\
         \\EXAMPLES:
-        \\  le-coq query entities --type person --limit 10
-        \\  le-coq query relations --limit 20
-        \\  le-coq plugins list
-        \\  le-coq plugins test wikipedia --query "France"
-        \\  le-coq graph stats
-        \\  le-coq api get /api/v1/sources
-        \\  le-coq health
+        \\  le-coq q e --type person -l 10        # entities, limit 10
+        \\  le-coq q r -l 20                      # relations
+        \\  le-coq p list                         # list plugins
+        \\  le-coq p t wikipedia -q "France"      # test plugin
+        \\  le-coq g stats                        # graph stats
+        \\  le-coq a get /api/v1/sources          # API call
+        \\  le-coq h                              # health check
         \\
         \\GLOBAL OPTIONS:
         \\  --api-key <key>               API key (or LE_COQ_API_KEY env)
@@ -123,13 +138,13 @@ fn queryCommand(stdout: anytype, stderr: anytype, subargs: [][]const u8) !void {
     const api_key = getApiKey();
     const api_url = getApiUrl();
 
-    if (std.mem.eql(u8, resource, "entities")) {
+    if (isCmd(resource, "entities", "e")) {
         try queryEntities(stdout, api_url, api_key, subargs[1..]);
-    } else if (std.mem.eql(u8, resource, "relations")) {
+    } else if (isCmd(resource, "relations", "r")) {
         try queryRelations(stdout, api_url, api_key, subargs[1..]);
-    } else if (std.mem.eql(u8, resource, "search")) {
+    } else if (isCmd(resource, "search", "s")) {
         try querySearch(stdout, api_url, api_key, subargs[1..]);
-    } else if (std.mem.eql(u8, resource, "sources")) {
+    } else if (isCmd(resource, "sources", "src")) {
         try querySources(stdout, api_url, api_key);
     } else {
         try stderr.print("Unknown resource: {s}\n", .{resource});
@@ -142,31 +157,31 @@ fn queryEntities(stdout: anytype, api_url: []const u8, api_key: []const u8, args
     var query_params = std.ArrayList(u8).init(std.heap.page_allocator);
     defer query_params.deinit();
 
-    var format: []const u8 = "json";
-    var limit: []const u8 = "20";
+    var format: []const u8 = "table"; // default
+    var limit: []const u8 = "10"; // default
 
     try query_params.append('?');
     var first = true;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--type") and i + 1 < args.len) {
+        if (isCmd(args[i], "type", "t") and i + 1 < args.len) {
             if (!first) try query_params.append('&');
             try std.fmt.format(query_params.writer(), "type={s}", .{args[i + 1]});
             first = false;
             i += 1;
-        } else if (std.mem.eql(u8, args[i], "--q") and i + 1 < args.len) {
+        } else if (isCmd(args[i], "q", "q") and i + 1 < args.len) {
             if (!first) try query_params.append('&');
             try std.fmt.format(query_params.writer(), "q={s}", .{args[i + 1]});
             first = false;
             i += 1;
-        } else if (std.mem.eql(u8, args[i], "--limit") and i + 1 < args.len) {
+        } else if (isCmd(args[i], "limit", "l") and i + 1 < args.len) {
             limit = args[i + 1];
             if (!first) try query_params.append('&');
             try std.fmt.format(query_params.writer(), "limit={s}", .{args[i + 1]});
             first = false;
             i += 1;
-        } else if (std.mem.eql(u8, args[i], "--format") and i + 1 < args.len) {
+        } else if (isCmd(args[i], "format", "f") and i + 1 < args.len) {
             format = args[i + 1];
             i += 1;
         }
@@ -185,29 +200,29 @@ fn queryRelations(stdout: anytype, api_url: []const u8, api_key: []const u8, arg
     var query_params = std.ArrayList(u8).init(std.heap.page_allocator);
     defer query_params.deinit();
 
-    var format: []const u8 = "json";
+    var format: []const u8 = "table"; // default
 
     try query_params.append('?');
     var first = true;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--from") and i + 1 < args.len) {
+        if (isCmd(args[i], "from", "f") and i + 1 < args.len) {
             if (!first) try query_params.append('&');
             try std.fmt.format(query_params.writer(), "from={s}", .{args[i + 1]});
             first = false;
             i += 1;
-        } else if (std.mem.eql(u8, args[i], "--to") and i + 1 < args.len) {
+        } else if (isCmd(args[i], "to", "t") and i + 1 < args.len) {
             if (!first) try query_params.append('&');
             try std.fmt.format(query_params.writer(), "to={s}", .{args[i + 1]});
             first = false;
             i += 1;
-        } else if (std.mem.eql(u8, args[i], "--limit") and i + 1 < args.len) {
+        } else if (isCmd(args[i], "limit", "l") and i + 1 < args.len) {
             if (!first) try query_params.append('&');
             try std.fmt.format(query_params.writer(), "limit={s}", .{args[i + 1]});
             first = false;
             i += 1;
-        } else if (std.mem.eql(u8, args[i], "--format") and i + 1 < args.len) {
+        } else if (isCmd(args[i], "format", "f") and i + 1 < args.len) {
             format = args[i + 1];
             i += 1;
         }
@@ -279,13 +294,13 @@ fn pluginsCommand(stdout: anytype, stderr: anytype, subargs: [][]const u8) !void
         const endpoint = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/api/v1/sources", .{api_url});
         defer std.heap.page_allocator.free(endpoint);
         try makeApiRequest(stdout, "GET", endpoint, api_key, null);
-    } else if (std.mem.eql(u8, subcmd, "test")) {
+    } else if (isCmd(subcmd, "test", "t")) {
         if (subargs.len < 2) {
             try stderr.print("Usage: le-coq plugins test <source> --query <q>\n", .{});
             std.process.exit(1);
         }
         try pluginsTest(stdout, api_url, api_key, subargs[1..]);
-    } else if (std.mem.eql(u8, subcmd, "validate")) {
+    } else if (isCmd(subcmd, "validate", "v")) {
         try pluginsValidate(stdout, api_url, api_key, subargs[1..]);
     } else {
         try stderr.print("Unknown subcommand: {s}\n", .{subcmd});
@@ -307,7 +322,7 @@ fn pluginsTest(stdout: anytype, api_url: []const u8, api_key: []const u8, args: 
     var query: ?[]const u8 = null;
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
-        if (std.mem.eql(u8, args[i], "--query") and i + 1 < args.len) {
+        if (isCmd(args[i], "query", "q") and i + 1 < args.len) {
             query = args[i + 1];
             break;
         }
@@ -462,7 +477,7 @@ fn apiCommand(stdout: anytype, stderr: anytype, subargs: [][]const u8) !void {
     var body: ?[]const u8 = null;
     var i: usize = 2;
     while (i < subargs.len) : (i += 1) {
-        if (std.mem.eql(u8, subargs[i], "--body") and i + 1 < subargs.len) {
+        if (isCmd(subargs[i], "body", "b") and i + 1 < subargs.len) {
             body = subargs[i + 1];
             i += 1;
         }
