@@ -508,15 +508,10 @@ fn makeApiRequest(stdout: anytype, method: []const u8, url: []const u8, api_key:
 
 // Format JSON output as table
 fn formatOutput(stdout: anytype, json_response: []const u8, format: []const u8, resource_type: []const u8) !void {
-    if (std.mem.eql(u8, format, "json")) {
-        try stdout.print("{s}\n", .{json_response});
-    } else if (std.mem.eql(u8, format, "table")) {
-        try formatAsTable(stdout, json_response, resource_type);
-    } else if (std.mem.eql(u8, format, "csv")) {
-        try formatAsCsv(stdout, json_response, resource_type);
-    } else {
-        try stdout.print("{s}\n", .{json_response});
-    }
+    _ = format;
+    _ = resource_type;
+    // For now, just print raw JSON - user can pipe to jq
+    try stdout.print("{s}\n", .{json_response});
 }
 
 fn formatAsTable(stdout: anytype, json_response: []const u8, resource_type: []const u8) !void {
