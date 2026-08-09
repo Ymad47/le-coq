@@ -237,9 +237,31 @@ fn querySources(stdout: anytype, api_url: []const u8, api_key: []const u8) !void
     const response = try makeApiRequestRaw(endpoint, api_key, null);
     defer std.heap.page_allocator.free(response);
 
+    // Parse JSON array and print each source
+    const allocator = std.heap.page_allocator;
+    const tmp_path = try std.fmt.allocPrint(allocator, "/tmp/lecoq_sources_{d}.json", .{std.time.timestamp()});
+    defer allocator.free(tmp_path);
+    
+    var file = try std.fs.createFileAbsolute(tmp_path, .{});
+    try file.writeAll(response);
+    file.close();
+    
+    const cmd = try std.fmt.allocPrint(allocator, "jq -r '.[]' '{s}' 2>/dev/null || echo '{s}'", .{ tmp_path, response });
+    defer allocator.free(cmd);
+    
+    const result = std.process.Child.exec(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "sh", "-c", cmd },
+    }) catch {
+        try stdout.print("{s}\n", .{response});
+        return;
+    };
+    defer allocator.free(result.stderr);
+    
     try stdout.print("Active plugins:\n", .{});
-    // Simple formatting for sources list
-    try stdout.print("{s}\n", .{response});
+    try stdout.print("{s}\n", .{result.stdout});
+    
+    _ = std.fs.deleteFileAbsolute(tmp_path) catch {};
 }
 
 // Plugins command: list, test, validate
@@ -508,29 +530,112 @@ fn makeApiRequest(stdout: anytype, method: []const u8, url: []const u8, api_key:
 
 // Format JSON output as table
 fn formatOutput(stdout: anytype, json_response: []const u8, format: []const u8, resource_type: []const u8) !void {
-    _ = format;
-    _ = resource_type;
-    // For now, just print raw JSON - user can pipe to jq
-    try stdout.print("{s}\n", .{json_response});
+    const allocator = std.heap.page_allocator;
+    
+    if (std.mem.eql(u8, format, "json")) {
+        // Write to temp file, then jq for pretty print
+        const tmp_path = try std.fmt.allocPrint(allocator, "/tmp/lecoq_{s}_{d}.json", .{ resource_type, std.time.timestamp() });
+        defer allocator.free(tmp_path);
+        
+        // Write JSON to file
+        var file = try std.fs.createFileAbsolute(tmp_path, .{});
+        try file.writeAll(json_response);
+        file.close();
+        
+        // jq the file
+        const jq_cmd = try std.fmt.allocPrint(allocator, "jq '.' '{s}' && rm -f '{s}'", .{ tmp_path, tmp_path });
+        defer allocator.free(jq_cmd);
+        
+        const result = std.process.Child.exec(.{
+            .allocator = allocator,
+            .argv = &[_][]const u8{ "sh", "-c", jq_cmd },
+        }) catch {
+            try stdout.print("{s}\n", .{json_response});
+            return;
+        };
+        defer allocator.free(result.stderr);
+        try stdout.print("{s}", .{result.stdout});
+    } else if (std.mem.eql(u8, format, "table")) {
+        try formatAsTable(stdout, json_response, resource_type);
+    } else if (std.mem.eql(u8, format, "csv")) {
+        try formatAsCsv(stdout, json_response, resource_type);
+    } else {
+        try stdout.print("{s}\n", .{json_response});
+    }
 }
 
 fn formatAsTable(stdout: anytype, json_response: []const u8, resource_type: []const u8) !void {
-    // Use jq for table formatting if available, else print JSON
+    const allocator = std.heap.page_allocator;
     
     // Check if empty array
     if (std.mem.eql(u8, std.mem.trim(u8, json_response, " \n\t"), "[]")) {
         try stdout.print("No {s} found.\n", .{resource_type});
         return;
     }
-
-    // For now, just print JSON - user can pipe to jq
-    try stdout.print("{s}\n", .{json_response});
+    
+    // Write to temp file
+    const tmp_path = try std.fmt.allocPrint(allocator, "/tmp/lecoq_{s}_{d}.json", .{ resource_type, std.time.timestamp() });
+    defer allocator.free(tmp_path);
+    
+    var file = try std.fs.createFileAbsolute(tmp_path, .{});
+    try file.writeAll(json_response);
+    file.close();
+    
+    // Extract fields and format as table with jq + column
+    const table_cmd = switch (resource_type[0]) {
+        'e' => try std.fmt.allocPrint(allocator, "jq -r '.[] | [.id, .name, .type] | @tsv' '{s}' | column -t -s $'\\t' 2>/dev/null || jq -r '.[] | \"\\(.id)\\t\\(.name)\\t\\(.type)\"' '{s}'", .{ tmp_path, tmp_path }),
+        'r' => try std.fmt.allocPrint(allocator, "jq -r '.[] | [.from, .to, .type] | @tsv' '{s}' | column -t -s $'\\t' 2>/dev/null || jq -r '.[] | \"\\(.from)\\t\\(.to)\\t\\(.type)\"' '{s}'", .{ tmp_path, tmp_path }),
+        's' => try std.fmt.allocPrint(allocator, "jq -r '.[] | \"\\(.)\"' '{s}' | column -t 2>/dev/null || cat '{s}'", .{ tmp_path, tmp_path }),
+        else => try std.fmt.allocPrint(allocator, "jq '.' '{s}'", .{tmp_path}),
+    };
+    defer allocator.free(table_cmd);
+    
+    const result = std.process.Child.exec(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "sh", "-c", table_cmd },
+    }) catch {
+        // Fallback: raw JSON
+        try stdout.print("{s}\n", .{json_response});
+        return;
+    };
+    defer allocator.free(result.stderr);
+    try stdout.print("{s}\n", .{result.stdout});
+    
+    // Cleanup
+    _ = std.fs.deleteFileAbsolute(tmp_path) catch {};
 }
 
 fn formatAsCsv(stdout: anytype, json_response: []const u8, resource_type: []const u8) !void {
-    _ = resource_type;
-    // Simple CSV - just output JSON for now
-    try stdout.print("{s}\n", .{json_response});
+    const allocator = std.heap.page_allocator;
+    
+    // Write to temp file
+    const tmp_path = try std.fmt.allocPrint(allocator, "/tmp/lecoq_{s}_{d}.json", .{ resource_type, std.time.timestamp() });
+    defer allocator.free(tmp_path);
+    
+    var file = try std.fs.createFileAbsolute(tmp_path, .{});
+    try file.writeAll(json_response);
+    file.close();
+    
+    // Convert to CSV with jq
+    const csv_cmd = switch (resource_type[0]) {
+        'e' => try std.fmt.allocPrint(allocator, "jq -r '.[] | [.id, .name, .type] | @csv' '{s}'", .{tmp_path}),
+        'r' => try std.fmt.allocPrint(allocator, "jq -r '.[] | [.from, .to, .type] | @csv' '{s}'", .{tmp_path}),
+        else => try std.fmt.allocPrint(allocator, "jq -r '.[] | @csv' '{s}'", .{tmp_path}),
+    };
+    defer allocator.free(csv_cmd);
+    
+    const result = std.process.Child.exec(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "sh", "-c", csv_cmd },
+    }) catch {
+        try stdout.print("{s}\n", .{json_response});
+        return;
+    };
+    defer allocator.free(result.stderr);
+    try stdout.print("{s}\n", .{result.stdout});
+    
+    // Cleanup
+    _ = std.fs.deleteFileAbsolute(tmp_path) catch {};
 }
 
 fn buildSearchBody(args: [][]const u8) ![]const u8 {
