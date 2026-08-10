@@ -115,6 +115,88 @@ pub fn list_plugins() -> Result<Vec<String>, String> {
     })
 }
 
+/// Get plugins that failed to import, with their error messages
+pub fn plugin_failures() -> Result<Vec<(String, String)>, String> {
+    Python::with_gil(|py| {
+        let plugins_module = py
+            .import("plugins")
+            .map_err(|e| format!("Failed to import plugins module: {}", e))?;
+
+        let result = plugins_module
+            .call_method0("plugin_failures")
+            .map_err(|e| format!("Failed to call plugin_failures: {}", e))?;
+
+        let dict = result
+            .downcast::<PyDict>()
+            .map_err(|e| format!("plugin_failures did not return a dict: {}", e))?;
+
+        let mut failures = Vec::new();
+        for (k, v) in dict.iter() {
+            let name: String = k.extract().map_err(|e| e.to_string())?;
+            let err: String = v.extract().map_err(|e| e.to_string())?;
+            failures.push((name, err));
+        }
+        Ok(failures)
+    })
+}
+
+/// Reload all plugins from disk (hot-reload after editing a plugin file)
+pub fn reload_plugins() -> Result<Vec<String>, String> {
+    Python::with_gil(|py| {
+        // Re-import the plugins module itself (picks up __init__ changes),
+        // then reload each source submodule.
+        let importlib = py
+            .import("importlib")
+            .map_err(|e| format!("Failed to import importlib: {}", e))?;
+        importlib
+            .call_method0("invalidate_caches")
+            .map_err(|e| format!("Failed to invalidate caches: {}", e))?;
+
+        let plugins_module = py
+            .import("plugins")
+            .map_err(|e| format!("Failed to import plugins module: {}", e))?;
+        let plugins_module = importlib
+            .call_method1("reload", (plugins_module,))
+            .map_err(|e| format!("Failed to reload plugins module: {}", e))?;
+
+        // Reload every plugins.sources.* submodule
+        let sources_pkg = py
+            .import("plugins.sources")
+            .map_err(|e| format!("Failed to import plugins.sources: {}", e))?;
+        let sources_pkg = importlib
+            .call_method1("reload", (sources_pkg,))
+            .map_err(|e| format!("Failed to reload plugins.sources: {}", e))?;
+        let _ = sources_pkg; // keep binding to avoid GC before submodule reloads
+
+        let sys = py.import("sys").map_err(|e| e.to_string())?;
+        let modules = sys.getattr("modules").map_err(|e| e.to_string())?;
+        let modules = modules
+            .downcast::<PyDict>()
+            .map_err(|e| e.to_string())?;
+        let mut to_reload = Vec::new();
+        for (k, v) in modules.iter() {
+            if let Ok(name) = k.extract::<String>() {
+                if name.starts_with("plugins.sources.") {
+                    to_reload.push(v);
+                }
+            }
+        }
+        for m in to_reload {
+            let _ = importlib.call_method1("reload", (m,)); // ignore per-module errors
+        }
+
+        // Re-run discovery to register new plugins / record failures
+        let discover = plugins_module
+            .getattr("_auto_discover")
+            .map_err(|e| format!("Failed to get _auto_discover: {}", e))?;
+        discover
+            .call0()
+            .map_err(|e| format!("Failed to re-run auto-discovery: {}", e))?;
+
+        list_plugins()
+    })
+}
+
 /// Validate a plugin connection
 pub fn validate_plugin(plugin_name: &str) -> Result<bool, String> {
     Python::with_gil(|py| {

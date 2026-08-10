@@ -161,24 +161,42 @@ def call_plugin_method_sync(plugin_name: str, method: str, args: Dict[str, Any])
 
 
 # Auto-discover plugins
+_failed_plugins: Dict[str, str] = {}  # plugin_name -> error message
+
+
+def plugin_failures() -> Dict[str, str]:
+    """Plugins that failed to import during auto-discovery, with their error."""
+    return dict(_failed_plugins)
+
+
 def _auto_discover():
     """Auto-discover and register plugins from plugins.sources package"""
     import importlib
+    import logging
+    import traceback
     from pathlib import Path
-    
+
+    log = logging.getLogger("le_coq.plugins")
+
     sources_dir = Path(__file__).parent / "sources"
     if not sources_dir.exists():
         return
-    
+
     for file_path in sources_dir.glob("*.py"):
         if file_path.name.startswith("_"):
             continue
-        
+
         module_name = f"plugins.sources.{file_path.stem}"
+        plugin_name = file_path.stem
         try:
+            # invalidate cache so reload after restart picks up newest file
+            importlib.invalidate_caches()
             importlib.import_module(module_name)
+            _failed_plugins.pop(plugin_name, None)
         except Exception as e:
-            pass  # Silent fail for auto-discovery
+            tb = traceback.format_exc().strip().splitlines()[-1]
+            _failed_plugins[plugin_name] = tb
+            log.error("Plugin import failed: %s — %s", plugin_name, tb)
 
 
 # Auto-discover on import

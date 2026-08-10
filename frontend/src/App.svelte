@@ -40,7 +40,7 @@
       // Pas de query → juste lister DB
       loading = true;
       try {
-        const data = await api('/api/v1/entities');
+        const data = await api('/api/v1/entities?limit=1000');
         entities = Array.isArray(data) ? data : data.entities ?? [];
         newItems = 0;
         searchErrors = [];
@@ -87,7 +87,7 @@
     error = '';
     try {
       const [ents, rels] = await Promise.all([
-        api('/api/v1/entities'),
+        api('/api/v1/entities?limit=1000'),
         api('/api/v1/relationships'),
       ]);
       entities = Array.isArray(ents) ? ents : ents.entities ?? [];
@@ -150,7 +150,7 @@
 
       // 2) Load full graph for visualization
       const [ents, rels] = await Promise.all([
-        api('/api/v1/entities'),
+        api('/api/v1/entities?limit=1000'),
         api('/api/v1/relationships'),
       ]);
       entities = Array.isArray(ents) ? ents : ents.entities ?? [];

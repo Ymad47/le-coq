@@ -27,6 +27,8 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/search", get(smart_search).post(search))
         .route("/api/v1/ingest", post(ingest_data))
         .route("/api/v1/sources", get(list_sources))
+        .route("/api/v1/plugins/health", get(plugins_health))
+        .route("/api/v1/plugins/reload", post(plugins_reload))
         .layer(middleware::from_fn_with_state(state.clone(), api_key_auth))
         .with_state(state)
 }
@@ -566,4 +568,37 @@ async fn search(
         "count": results.len(),
         "results": results,
     })))
+}
+
+/// GET /api/v1/plugins/health — loaded plugins + import failures
+async fn plugins_health() -> Json<serde_json::Value> {
+    let loaded = crate::plugin_bridge::list_plugins().unwrap_or_default();
+    let failures = crate::plugin_bridge::plugin_failures()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(name, err)| serde_json::json!({ "name": name, "error": err }))
+        .collect::<Vec<_>>();
+    Json(serde_json::json!({
+        "loaded": loaded,
+        "failed": failures,
+    }))
+}
+
+/// POST /api/v1/plugins/reload — hot-reload plugin code from disk
+async fn plugins_reload() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    match crate::plugin_bridge::reload_plugins() {
+        Ok(loaded) => {
+            let failures = crate::plugin_bridge::plugin_failures()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, err)| serde_json::json!({ "name": name, "error": err }))
+                .collect::<Vec<_>>();
+            Ok(Json(serde_json::json!({
+                "reloaded": true,
+                "loaded": loaded,
+                "failed": failures,
+            })))
+        }
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e)),
+    }
 }
