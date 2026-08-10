@@ -66,11 +66,37 @@ pub async fn ingest_data(
         // Parse and store the data in the database
         let entities_data = result.data.clone().unwrap_or(Value::Array(vec![]));
         
-        if let Value::Array(entities) = entities_data {
-            tracing::info!("Attempting to store {} entities", entities.len());
-            
-            for entity_value in entities {
-                match serde_json::from_value::<EntityData>(entity_value.clone()) {
+        if let Value::Array(items) = entities_data {
+            tracing::info!("Attempting to store {} items", items.len());
+
+            for item in items {
+                // Distingue entité vs relation par présence de from_entity/to_entity
+                let is_relation = item.get("from_entity").is_some() && item.get("to_entity").is_some();
+
+                if is_relation {
+                    let from = item.get("from_entity").and_then(|v| v.as_str()).unwrap_or("");
+                    let to = item.get("to_entity").and_then(|v| v.as_str()).unwrap_or("");
+                    let rel_type = item.get("relationship_type").and_then(|v| v.as_str()).unwrap_or("related_to");
+                    let confidence = item.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+                    let properties = item.get("properties").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+                    let sources: Vec<String> = item.get("sources").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+
+                    let res = sqlx::query(
+                        r#"INSERT INTO relationships (from_entity, to_entity, relationship_type, properties, confidence, sources)
+                           VALUES ($1, $2, $3, $4, $5, $6)"#
+                    )
+                    .bind(from).bind(to).bind(rel_type)
+                    .bind(sqlx::types::Json(&properties)).bind(confidence).bind(&sources)
+                    .execute(&state.postgres)
+                    .await;
+                    match res {
+                        Ok(_) => tracing::info!("Relation: {} -[{}]-> {}", from, rel_type, to),
+                        Err(e) => tracing::error!("Failed to insert relation {}->{}: {}", from, to, e),
+                    }
+                    continue;
+                }
+
+                match serde_json::from_value::<EntityData>(item.clone()) {
                     Ok(entity) => {
                         tracing::info!("Inserting entity: {} ({})", entity.id, entity.name);
                         
