@@ -33,3 +33,13 @@ audits/
 # Database
 *.db
 *.sqlite
+
+# Caches (dev artifacts — doit pas être commités)
+zig-cache/
+.zig-cache/
+__pycache__/
+*.pyc
+graphify-out/
+venv/
+node_modules/
+dist/
