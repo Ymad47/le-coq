@@ -1,12 +1,15 @@
 """
-Wikipedia Plugin - Free encyclopedia data
+Wikipedia Plugin - Free encyclopedia data + relations from internal links
 
 API: https://en.wikipedia.org/api/rest_v1/
+Extracts entities + creates 'related_to' relations from internal Wikipedia links.
 """
 
 import aiohttp
 import asyncio
-from typing import Dict, List, Any
+import re
+from typing import Dict, List, Any, Set, Tuple
+from bs4 import BeautifulSoup
 from plugins import DataSourcePlugin, Entity, register_plugin
 
 
@@ -35,8 +38,9 @@ class WikipediaPlugin(DataSourcePlugin):
             return False
     
     async def fetch(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Search for Wikipedia pages using the correct API endpoint"""
+        """Search for Wikipedia pages + extract internal links as relations"""
         results = []
+        relations = []
         
         # Support both 'q' and 'query' parameter names
         search_query = query.get("q") or query.get("query", "")
@@ -85,6 +89,7 @@ class WikipediaPlugin(DataSourcePlugin):
                                         entity_type="Topic",
                                         aliases=[],
                                         properties={
+                                            "source": "Wikipedia",
                                             "description": summary_data.get("extract", ""),
                                             "url": summary_data.get("content_urls", {}).get("desktop", {}).get("page", ""),
                                             "thumbnail": summary_data.get("thumbnail", {}).get("source", ""),
@@ -96,6 +101,10 @@ class WikipediaPlugin(DataSourcePlugin):
                                         sources=[f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"]
                                     )
                                     results.append(entity.model_dump())
+                                    
+                                    # Extract internal links from full page HTML to create relations
+                                    relations.extend(await self._extract_links(session, title, entity))
+                                    
                                 else:
                                     # If we can't get the summary, create a basic entity from search data
                                     entity = Entity(
@@ -104,6 +113,7 @@ class WikipediaPlugin(DataSourcePlugin):
                                         entity_type="Topic",
                                         aliases=[],
                                         properties={
+                                            "source": "Wikipedia",
                                             "description": page.get("snippet", ""),
                                             "url": f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
                                             "wordcount": page.get("wordcount", 0),
@@ -121,16 +131,93 @@ class WikipediaPlugin(DataSourcePlugin):
                                 entity_type="Topic",
                                 aliases=[],
                                 properties={
+                                    "source": "Wikipedia",
                                     "description": page.get("snippet", ""),
                                     "url": f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}",
                                     "wordcount": page.get("wordcount", 0),
-                                    "size": page.get("size", 0),
+                                    "size": page.get("size", 0)
                                 },
                                 sources=[f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"]
                             )
                             results.append(entity.model_dump())
         
+        # Append relations at the end
+        results.extend(relations)
         return results
+    
+    async def _extract_links(self, session: aiohttp.ClientSession, title: str, source_entity: Entity) -> List[Dict[str, Any]]:
+        """Extract internal Wikipedia links using API (more reliable than HTML parsing)"""
+        relations = []
+        seen_links: Set[str] = set()
+        
+        try:
+            # Use Wikipedia links API (no HTML parsing needed)
+            api_url = "https://en.wikipedia.org/w/api.php"
+            params = {
+                "action": "query",
+                "format": "json",
+                "titles": title,
+                "prop": "links",
+                "plnamespace": "0",  # Only main article namespace
+                "pllimit": "max"  # Get max links (500 for bots)
+            }
+            
+            async with session.get(
+                api_url,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=15)
+            ) as resp:
+                if resp.status != 200:
+                    return relations
+                data = await resp.json()
+                
+                # Extract links from API response
+                pages = data.get("query", {}).get("pages", {})
+                for page_id, page_data in pages.items():
+                    links = page_data.get("links", [])
+                    
+                    for link in links:
+                        link_title = link.get("title", "")
+                        if not link_title or link_title in seen_links:
+                            continue
+                        seen_links.add(link_title)
+                        
+                        # Skip disambiguation pages (check title)
+                        if '(disambiguation)' in link_title.lower():
+                            continue
+                        
+                        # Create target entity (minimal, will be enriched if user clicks)
+                        target_id = f"wiki_{link_title.replace(' ', '_')}"
+                        
+                        # Create relation
+                        relation = {
+                            "id": f"rel_wiki_{self._slug(source_entity.name)}_related_{self._slug(link_title)}",
+                            "entity_type": "Relation",
+                            "from_entity": source_entity.id,
+                            "to_entity": target_id,
+                            "relationship_type": "related_to",
+                            "properties": {
+                                "source": "Wikipedia",
+                                "link_context": "internal_link",
+                            },
+                            "confidence": 0.7,  # Lower than Wikidata (less structured)
+                            "sources": [f"https://en.wikipedia.org/wiki/{title.replace(' ', '_')}"]
+                        }
+                        relations.append(relation)
+                        
+                        # Limit to 20 relations per page to avoid overload
+                        if len(relations) >= 20:
+                            break
+                    break  # Only process first page
+                    
+        except Exception as e:
+            print(f"Error extracting links from {title}: {e}")
+        
+        return relations
+    
+    def _slug(self, name: str) -> str:
+        """Create URL-safe slug from name"""
+        return re.sub(r'[^a-zA-Z0-9]+', '_', name).strip('_')[:80]
     
     def get_schema(self) -> Dict[str, Any]:
         return {

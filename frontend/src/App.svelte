@@ -7,7 +7,8 @@
   let query = '';
   let loading = false;
   let error = '';
-  let view = 'list'; // 'list' | 'graph'
+  let view = 'list'; // 'list' | 'graph' | 'focus'
+  let focusHubId = null;
   let health = '';
 
   let ingestOnline = true; // online par défaut — UX souveraine
@@ -91,13 +92,121 @@
       ]);
       entities = Array.isArray(ents) ? ents : ents.entities ?? [];
       relationships = Array.isArray(rels) ? rels : rels.relationships ?? [];
+      graphLayout = 'cose';
+      focusHubId = null;
       view = 'graph';
       await tick();
       renderGraph();
+      
+      // Auto-center on query match if searching (after layout finishes)
+      if (query.trim() && cy) {
+        const qLower = query.trim().toLowerCase();
+        const match = entities.find((e) => (e.name ?? '').toLowerCase() === qLower)
+          ?? entities.find((e) => (e.name ?? '').toLowerCase().startsWith(qLower));
+        if (match) {
+          const doCenter = () => {
+            const node = cy.getElementById(match.id);
+            if (node && node.length) {
+              cy.animate({ center: { eles: node }, duration: 300 });
+              node.select();
+              selectedNode = node.data();
+              const neighborhood = node.closedNeighborhood();
+              cy.elements().removeClass('dim');
+              cy.elements().not(neighborhood).addClass('dim');
+            }
+          };
+          cy.one('layoutstop', doCenter);
+          setTimeout(() => { if (cy && !selectedNode) doCenter(); }, 800);
+        }
+      }
     } catch (e) {
       error = `Chargement du graphe échoué : ${e.message}`;
     }
     loading = false;
+  }
+
+  // Focus: graph-centric view centered on the best-matching node for current query
+  async function loadFocus() {
+    if (!query.trim()) {
+      error = 'Entrez une recherche d\'abord pour utiliser Vue Focus.';
+      return;
+    }
+    loading = true;
+    searching = true;
+    error = '';
+    newItems = 0;
+    searchErrors = [];
+
+    try {
+      // 1) Smart search first (ingests + refreshes)
+      const params = new URLSearchParams({ q: query.trim(), online: ingestOnline });
+      if (ingestOnline && selectedSources.size > 0) {
+        params.set('sources', Array.from(selectedSources).join(','));
+      }
+      const data = await api(`/api/v1/search?${params}`);
+      const results = data.results ?? [];
+      newItems = data.new_items ?? 0;
+      searchErrors = data.errors ?? [];
+
+      // 2) Load full graph for visualization
+      const [ents, rels] = await Promise.all([
+        api('/api/v1/entities'),
+        api('/api/v1/relationships'),
+      ]);
+      entities = Array.isArray(ents) ? ents : ents.entities ?? [];
+      relationships = Array.isArray(rels) ? rels : rels.relationships ?? [];
+
+      // 3) Identify hub: prefer 1st match by name; fallback to highest degree
+      const qLower = query.trim().toLowerCase();
+      let hub = null;
+      // exact / starts-with
+      hub = results.find((r) => (r.name ?? '').toLowerCase() === qLower)
+        ?? results.find((r) => (r.name ?? '').toLowerCase().startsWith(qLower))
+        ?? results[0];
+      focusHubId = hub?.id ?? null;
+
+      // 4) Layout: concentric centered on hub
+      graphLayout = 'concentric';
+      view = 'focus';
+      await tick();
+      renderGraph();
+
+      // 5) Wait for layout to finish, then center/select hub node
+      if (focusHubId && cy) {
+        const centerHub = () => {
+          const node = cy.getElementById(focusHubId);
+          if (node && node.length) {
+            selectedNode = node.data();
+            cy.animate({
+              center: { eles: node },
+              zoom: { level: 1.2, position: node.position() },
+              duration: 300,
+            });
+            node.select();
+            const neighborhood = node.closedNeighborhood();
+            cy.elements().removeClass('dim');
+            cy.elements().not(neighborhood).addClass('dim');
+          } else {
+            // Hub not found as node — try substring match on label
+            const alt = cy.nodes().filter((n) =>
+              (n.data('label') ?? '').toLowerCase().includes(qLower)
+            ).first();
+            if (alt && alt.length) {
+              focusHubId = alt.id();
+              centerHub();
+            }
+          }
+        };
+        // layoutstop fires after cose/concentric finishes
+        cy.one('layoutstop', centerHub);
+        // Safety fallback if layoutstop never fires
+        setTimeout(() => { if (cy && !selectedNode) centerHub(); }, 800);
+      }
+    } catch (e) {
+      error = `Vue Focus échouée : ${e.message}`;
+    }
+    loading = false;
+    searching = false;
   }
 
   // Color palette by entity type (cohérent, lisible)
@@ -120,10 +229,113 @@
     default: '#4a5568',
   };
 
+  // Cluster coloring: each top hub gets a stable random hue (seeded by ID),
+  // its neighborhood follows in a lightness gradient by BFS distance.
+  function stableRandom(str) {
+    // FNV-1a hash -> 0..1: same id always yields same color across reloads
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return ((h >>> 0) % 1000) / 1000;
+  }
+
+  function hslToHex(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+    const m = l - c / 2;
+    let r, g, b;
+    if (h < 60) { r = c; g = x; b = 0; }
+    else if (h < 120) { r = x; g = c; b = 0; }
+    else if (h < 180) { r = 0; g = c; b = x; }
+    else if (h < 240) { r = 0; g = x; b = c; }
+    else if (h < 300) { r = x; g = 0; b = c; }
+    else { r = c; g = 0; b = x; }
+    const c2 = (v) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+    return `#${c2(r)}${c2(g)}${c2(b)}`;
+  }
+
+  // Assign each node a color: hubs own their hue, children inherit with distance fade
+  function assignClusterColors(nodes, edges, deg, maxDegree, topRatio = 0.08) {
+    // Hubs = top-degree nodes (~top 8%, min 3)
+    const sorted = [...nodes].sort((a, b) => (deg.get(b.data.id) ?? 0) - (deg.get(a.data.id) ?? 0));
+    const hubCount = Math.max(3, Math.ceil(nodes.length * topRatio));
+    const hubs = sorted.filter((n) => (deg.get(n.data.id) ?? 0) > 0).slice(0, hubCount);
+
+    const color = new Map(); // nodeId -> hex
+    const hubHue = new Map(); // hubId -> hue
+
+    // Each hub: hue from seeded hash (spread with golden angle for variety)
+    hubs.forEach((hub, i) => {
+      const base = stableRandom(hub.data.id) * 360;
+      const hue = Math.round((base + i * 137.508) % 360); // golden angle spread
+      hubHue.set(hub.data.id, hue);
+      color.set(hub.data.id, hslToHex(hue, 0.75, 0.55)); // hubs: vivid
+    });
+
+    // BFS from all hubs simultaneously: nearest hub wins, deeper = lighter/duller
+    const adj = new Map(); // id -> [neighborId]
+    const push = (a, b) => { if (!adj.has(a)) adj.set(a, []); adj.get(a).push(b); };
+    edges.forEach((e) => {
+      push(e.data.source, e.data.target);
+      push(e.data.target, e.data.source); // undirected for clustering
+    });
+
+    const queue = hubs.map((h) => ({ id: h.data.id, depth: 0, hue: hubHue.get(h.data.id) }));
+    const visited = new Set(hubs.map((h) => h.data.id));
+    while (queue.length) {
+      const { id, depth, hue } = queue.shift();
+      const dist = depth; // 1, 2, 3...
+      color.set(id, hslToHex(hue, Math.max(0.25, 0.7 - depth * 0.14), Math.max(0.35, 0.62 - depth * 0.07)));
+      for (const nb of adj.get(id) ?? []) {
+        if (!visited.has(nb)) {
+          visited.add(nb);
+          queue.push({ id: nb, depth: depth + 1, hue });
+        }
+      }
+    }
+
+    // Unreachable leftovers (isolated/disconnected from hubs): slate
+    nodes.forEach((n) => {
+      if (!color.has(n.data.id)) color.set(n.data.id, '#2d3748');
+    });
+
+    return { color, hubIds: new Set(hubs.map((h) => h.data.id)) };
+  }
+
   let selectedNode = null;
   let graphLayout = 'cose';
   let nodeCount = 0;
   let edgeCount = 0;
+  let showIsolated = false; // hide degree-0 nodes by default
+
+  // Cache resolved Wikidata labels (Q142 -> "France")
+  const qidLabelCache = new Map();
+
+  // Resolve Wikidata Q-codes to human labels via wbgetentities (batch, no key needed)
+  async function resolveQidLabels(ids) {
+    const unknown = ids.filter((id) => id.startsWith('wd_item_') && !qidLabelCache.has(id));
+    if (!unknown.length) return;
+    const BATCH = 50; // MediaWiki API limit
+    for (let i = 0; i < unknown.length; i += BATCH) {
+      const chunk = unknown.slice(i, i + BATCH);
+      const qids = chunk.map((id) => id.slice(8)).join('|'); // strip "wd_item_"
+      try {
+        const url = `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${qids}&props=labels&languages=fr|en&format=json&origin=*`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+        for (const id of chunk) {
+          const qid = id.slice(8);
+          const ent = data.entities?.[qid];
+          const label = ent?.labels?.fr?.value ?? ent?.labels?.en?.value;
+          if (label) qidLabelCache.set(id, label);
+        }
+      } catch {
+        // network fail -> keep Q-code labels
+      }
+    }
+  }
 
   function colorForType(t) {
     if (!t) return TYPE_COLORS.unknown;
@@ -135,11 +347,24 @@
     return EDGE_COLORS[rel.toLowerCase()] ?? EDGE_COLORS.default;
   }
 
-  function renderGraph() {
+  async function renderGraph() {
     if (!graphEl) return;
+
+    // Resolve Q-code labels for referenced Wikidata items before building nodes
+    const referencedIds = new Set();
+    relationships.forEach((r) => {
+      const f = r.source_id ?? r.from_entity;
+      const t = r.target_id ?? r.to_entity;
+      if (f) referencedIds.add(f);
+      if (t) referencedIds.add(t);
+    });
+    const nodeMap = new Map(entities.map((e) => [e.id, e]));
+    const placeholderIds = [...referencedIds].filter((id) => !nodeMap.has(id));
+    await resolveQidLabels(placeholderIds);
+
     cy?.destroy();
 
-    // Entities: keep full data for tooltip/panel
+    // Start with known entities
     const nodes = entities.map((e) => ({
       data: {
         id: e.id,
@@ -150,9 +375,32 @@
         source: e.properties?.source ?? '',
       },
     }));
-    const nodeIds = new Set(entities.map((e) => e.id));
 
-    // Edges: accept both old (source_id/target_id) and new (from_entity/to_entity) keys
+    // Add placeholder nodes for referenced but missing entities
+    placeholderIds.forEach((id) => {
+      // Priority: resolved Wikidata label > prefix-stripped fallback > raw id
+      let label = qidLabelCache.get(id);
+      if (!label) {
+        if (id.startsWith('wiki_')) label = id.slice(5).replace(/_/g, ' ');
+        else if (id.startsWith('wd_item_')) label = id.slice(8);
+        else if (id.startsWith('eurostat_country_')) label = id.slice(17).replace(/_/g, ' ');
+        else label = id;
+      }
+      label = (label || id).trim() || id;
+      nodes.push({
+        data: {
+          id,
+          label,
+          type: 'unknown',
+          description: '',
+          country: '',
+          source: '',
+          placeholder: 'true',
+        },
+      });
+    });
+
+    // Edges: accept both old and new keys, no filtering
     const edges = relationships
       .map((r) => {
         const from = r.source_id ?? r.from_entity;
@@ -160,7 +408,7 @@
         const relType = r.relation_type ?? r.relationship_type ?? r.type ?? '';
         return { from, to, relType, rawId: r.id };
       })
-      .filter((e) => e.from && e.to && nodeIds.has(e.from) && nodeIds.has(e.to))
+      .filter((e) => e.from && e.to)
       .map((e) => ({
         data: {
           id: e.rawId,
@@ -171,32 +419,69 @@
         },
       }));
 
-    // Compute degree for sizing
+    // Compute degree for sizing and coloring
     const deg = new Map();
     edges.forEach((e) => {
       deg.set(e.data.source, (deg.get(e.data.source) ?? 0) + 1);
       deg.set(e.data.target, (deg.get(e.data.target) ?? 0) + 1);
     });
-    nodes.forEach((n) => {
+
+    // Find max degree for heat map scaling
+    const maxDegree = Math.max(...deg.values(), 0);
+
+    // Filter isolated nodes (degree 0) unless explicitly shown
+    const visibleNodes = showIsolated
+      ? nodes
+      : nodes.filter((n) => (deg.get(n.data.id) ?? 0) > 0 || n.data.id === focusHubId);
+
+    // Cluster colors: hubs vivid, children fade by BFS distance
+    const { color: clusterColor, hubIds } = assignClusterColors(visibleNodes, edges, deg, maxDegree);
+
+    visibleNodes.forEach((n) => {
       const d = deg.get(n.data.id) ?? 0;
       n.data.degree = d;
-      n.data.size = Math.min(20 + d * 2, 60); // cap à 60px
+      // Quadratic sizing: hubs pop much more than leaves
+      const ratio = maxDegree > 0 ? d / maxDegree : 0;
+      n.data.size = Math.min(24 + 46 * ratio * ratio, 70);
+      n.data.color = clusterColor.get(n.data.id);
+      n.data.hot = hubIds.has(n.data.id) ? 'true' : 'false';
     });
 
-    nodeCount = nodes.length;
+    nodeCount = visibleNodes.length;
     edgeCount = edges.length;
+    const hiddenCount = nodes.length - visibleNodes.length;
 
     const showEdgeLabel = edgeCount < 30;
 
+    const layoutOpts = {
+      name: graphLayout,
+      animate: false,
+      padding: 30,
+      ...(graphLayout === 'concentric' && {
+        minNodeSpacing: 30,
+        avoidOverlap: true,
+        concentric: (node) => node.data('degree') ?? 0,
+        levelWidth: () => 1,
+      }),
+      ...(graphLayout === 'breadthfirst' && {
+        directed: true,
+        spacingFactor: 1.2,
+        avoidOverlap: true,
+      }),
+    };
+
     cy = cytoscape({
       container: graphEl,
-      elements: [...nodes, ...edges],
+      elements: [...visibleNodes, ...edges],
       style: [
         {
           selector: 'node',
           style: {
             label: 'data(label)',
-            'background-color': (ele) => colorForType(ele.data('type')),
+            'background-color': (ele) => {
+              // Use heat map color if available (degree-based), otherwise type-based
+              return ele.data('color') ?? colorForType(ele.data('type'));
+            },
             color: '#e8e6e3',
             'font-size': 10,
             'font-weight': 500,
@@ -208,6 +493,25 @@
             height: 'data(size)',
             'border-width': 0,
             'border-color': '#c9a227',
+          },
+        },
+        {
+          selector: 'node[placeholder = "true"]',
+          style: {
+            'background-color': '#4a5568',
+            'border-width': 2,
+            'border-style': 'dashed',
+            'border-color': '#718096',
+            opacity: 0.7,
+          },
+        },
+        {
+          // Hot hubs: subtle gold halo to signal importance
+          selector: 'node[hot = "true"]',
+          style: {
+            'border-width': 3,
+            'border-color': '#f6ad37',
+            'border-opacity': 0.9,
           },
         },
         {
@@ -248,7 +552,7 @@
           },
         },
       ],
-      layout: { name: graphLayout, animate: false, padding: 30 },
+      layout: layoutOpts,
     });
 
     // Click node → show details panel
@@ -340,6 +644,9 @@
     <button class="secondary" on:click={loadGraph} disabled={loading}>
       Vue Graphe
     </button>
+    <button class="secondary focus-btn" on:click={loadFocus} disabled={loading || !query.trim()} title="Cas 10-min : smart search + graphe centré sur l'entité">
+      🎯 Vue Focus
+    </button>
     <button class="secondary" on:click={() => (view = 'list')} disabled={view === 'list'}>
       Vue Liste
     </button>
@@ -401,6 +708,9 @@
   {:else}
     <div class="graph-toolbar">
       <span class="graph-stats">{nodeCount} nœuds · {edgeCount} arêtes</span>
+      <button class="secondary small" on:click={() => { showIsolated = !showIsolated; renderGraph(); }} title="Afficher/masquer les entités sans lien">
+        {showIsolated ? '👁️ Masquer orphelins' : '👁️‍🗨️ Tout afficher'}
+      </button>
       <select bind:value={graphLayout} on:change={renderGraph}>
         <option value="cose">cose</option>
         <option value="breadthfirst">hiérarchie</option>
@@ -521,6 +831,12 @@
     color: #a0aec0; background: #2d374855; padding: 0.15rem 0.5rem; border-radius: 4px;
     border: 1px solid #2d3748;
   }
+  .focus-btn {
+    background: #c9a22755; color: #c9a227;
+    border: 1px solid #c9a22744;
+  }
+  .focus-btn:hover:not(:disabled) { background: #c9a227; color: #0f1115; }
+  .focus-btn:disabled { opacity: 0.4; }
   .graph-wrap {
     height: 70vh; background: #141822; border: 1px solid #2d3748; border-radius: 10px;
     flex: 1;
