@@ -27,16 +27,26 @@ pub fn init_python() -> Result<(), String> {
             .map_err(|e| format!("Failed to downcast path: {}", e))?;
         
         // Add paths in order: plugins site-packages first (for deps), then plugins, then le-coq root
+        // INSERT en tête (position 0) : un VIRTUAL_ENV externe peut injecter
+        // un venv Python 3.14 en premier, masquant les deps cp311.
         path_list
-            .append("/home/yaya/le-coq/plugins/.venv/lib/python3.11/site-packages")
-            .map_err(|e| format!("Failed to append site-packages: {}", e))?;
+            .insert(0, "/home/yaya/le-coq/plugins/.venv/lib/python3.11/site-packages")
+            .map_err(|e| format!("Failed to insert site-packages: {}", e))?;
         path_list
             .append("/home/yaya/le-coq/plugins")
             .map_err(|e| format!("Failed to append plugins: {}", e))?;
         path_list
             .append("/home/yaya/le-coq")
             .map_err(|e| format!("Failed to append le-coq root: {}", e))?;
-        
+
+        // debug: print sys.path + probe import
+        let path_str: String = path.str().map_err(|e| e.to_string())?.to_string();
+        eprintln!("[plugin_bridge] sys.path = {}", path_str);
+        match py.import("pydantic_core") {
+            Ok(m) => eprintln!("[plugin_bridge] pydantic_core OK: {:?}", m.getattr("__file__")),
+            Err(e) => eprintln!("[plugin_bridge] pydantic_core FAIL: {}", e),
+        }
+
         Ok(())
     })
 }

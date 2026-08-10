@@ -15,6 +15,19 @@ use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Charge .env / .env.backend si présents (pas d'erreur si absents)
+    let _ = dotenvy::from_filename(".env.backend");
+    let _ = dotenvy::dotenv();
+
+    // PYO3_PYTHON doit pointer vers Python 3.11 (pydantic_core compilé cp311)
+    // avant d'initialiser l'interpréteur embarqué.
+    if std::env::var("PYO3_PYTHON").is_err() {
+        // fallback: cherche python3.11 dans le PATH
+        if let Ok(path) = which_python311() {
+            std::env::set_var("PYO3_PYTHON", path);
+        }
+    }
+
     tracing_subscriber::registry()
         .with(tracing_subscriber::EnvFilter::new(
             std::env::var("RUST_LOG").unwrap_or_else(|_| "le_coq=info,tower_http=debug".into()),
@@ -26,6 +39,13 @@ async fn main() -> Result<()> {
 
     // Initialize Python interpreter (PyO3)
     plugin_bridge::init_python().map_err(|e| anyhow::anyhow!("Failed to init Python: {}", e))?;
+    pyo3::Python::with_gil(|py| {
+        if let Ok(sys) = py.import("sys") {
+            if let Ok(v) = sys.getattr("version") {
+                tracing::info!("🐍 Python runtime: {}", v);
+            }
+        }
+    });
     tracing::info!("🐍 Python interpreter initialized");
 
     let config = Config::from_env()?;
@@ -68,4 +88,25 @@ impl Config {
             api_key_header: std::env::var("API_KEY_HEADER").unwrap_or_else(|_| "X-API-Key".into()),
         })
     }
+}
+
+/// Cherche python3.11 dans le PATH (binaire ou shim)
+fn which_python311() -> Result<std::path::PathBuf> {
+    for candidate in ["/home/yaya/.local/bin/python3.11", "python3.11"] {
+        let out = std::process::Command::new(candidate)
+            .arg("--version")
+            .output();
+        if let Ok(o) = out {
+            if o.status.success() {
+                // résultat absolu si commande trouvée via PATH
+                if candidate.contains('/') {
+                    return Ok(candidate.into());
+                }
+                if let Ok(p) = which::which(candidate) {
+                    return Ok(p);
+                }
+            }
+        }
+    }
+    Err(anyhow::anyhow!("python3.11 introuvable"))
 }
