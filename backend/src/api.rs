@@ -330,6 +330,61 @@ struct SearchRequest {
     filters: Option<serde_json::Value>,
 }
 
+/// FTS + ILIKE fallback (multi-words OR per word, AND between words)
+async fn run_entity_query(
+    pool: &sqlx::PgPool,
+    q: &str,
+) -> Result<Vec<sqlx::postgres::PgRow>, sqlx::Error> {
+    let sql = "SELECT id, name, entity_type, properties, \
+               ts_rank(to_tsvector('english', name), plainto_tsquery('english', $1)) as rank \
+               FROM entities \
+               WHERE to_tsvector('english', name) @@ plainto_tsquery('english', $1) \
+               ORDER BY rank DESC LIMIT 50";
+    let rows = sqlx::query(sql).bind(q).fetch_all(pool).await?;
+    if !rows.is_empty() {
+        return Ok(rows);
+    }
+
+    // Fallback: ILIKE every word across name + properties (AND between words, OR per field)
+    let words: Vec<&str> = q.split_whitespace().collect();
+    if words.is_empty() {
+        return Ok(rows);
+    }
+    if words.len() == 1 {
+        let pat = format!("%{}%", words[0]);
+        return sqlx::query(
+            "SELECT id, name, entity_type, properties, 0.5::real as rank \
+             FROM entities WHERE name ILIKE $1 OR properties::text ILIKE $1 \
+             ORDER BY created_at DESC LIMIT 50",
+        )
+        .bind(&pat)
+        .fetch_all(pool)
+        .await;
+    }
+
+    let mut sql_like = String::from(
+        "SELECT id, name, entity_type, properties, 0.5::real as rank \
+         FROM entities WHERE ",
+    );
+    for i in 0..words.len() {
+        if i > 0 {
+            sql_like.push_str(" AND ");
+        }
+        sql_like.push_str(&format!(
+            "(name ILIKE ${} OR properties::text ILIKE ${})",
+            i + 1,
+            i + 1
+        ));
+    }
+    sql_like.push_str(" ORDER BY created_at DESC LIMIT 50");
+
+    let mut qb = sqlx::query(&sql_like);
+    for w in &words {
+        qb = qb.bind(format!("%{}%", w));
+    }
+    qb.fetch_all(pool).await
+}
+
 #[derive(Deserialize)]
 struct SmartSearchQuery {
     q: String,
@@ -359,21 +414,11 @@ async fn smart_search(
         source_list = vec!["wikipedia".into(), "wikidata".into()];
     }
 
-    // 1) Local DB search
-    let sql = "SELECT id, name, entity_type, properties, \
-               ts_rank(to_tsvector('english', name), plainto_tsquery('english', $1)) as rank \
-               FROM entities \
-               WHERE to_tsvector('english', name) @@ plainto_tsquery('english', $1) \
-               ORDER BY rank DESC LIMIT 50";
-
-    let rows = sqlx::query(sql)
-        .bind(&q)
-        .fetch_all(&state.postgres)
-        .await
-        .map_err(|e| {
-            tracing::error!("Smart search DB error: {}", e);
-            (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
-        })?;
+    // 1) Local DB search (FTS + ILIKE fallback if 0)
+    let rows = run_entity_query(&state.postgres, &q).await.map_err(|e| {
+        tracing::error!("Smart search DB error: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
+    })?;
 
     let mut results: Vec<serde_json::Value> = rows.iter().map(|row| {
         serde_json::json!({
@@ -410,14 +455,10 @@ async fn smart_search(
 
         // Refresh from DB after ingestion (dedup handled by ON CONFLICT)
         if new_ingested > 0 {
-            let rows2 = sqlx::query(sql)
-                .bind(&q)
-                .fetch_all(&state.postgres)
-                .await
-                .map_err(|e| {
-                    tracing::error!("Smart search refresh DB error: {}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, "DB refresh error".to_string())
-                })?;
+            let rows2 = run_entity_query(&state.postgres, &q).await.map_err(|e| {
+                tracing::error!("Smart search refresh DB error: {}", e);
+                (StatusCode::INTERNAL_SERVER_ERROR, "DB refresh error".to_string())
+            })?;
             results = rows2.iter().map(|row| {
                 serde_json::json!({
                     "id": row.get::<String, _>("id"),
