@@ -88,7 +88,7 @@
     try {
       const [ents, rels] = await Promise.all([
         api('/api/v1/entities?limit=1000'),
-        api('/api/v1/relationships'),
+        api('/api/v1/relationships?limit=5000'),
       ]);
       entities = Array.isArray(ents) ? ents : ents.entities ?? [];
       relationships = Array.isArray(rels) ? rels : rels.relationships ?? [];
@@ -151,7 +151,7 @@
       // 2) Load full graph for visualization
       const [ents, rels] = await Promise.all([
         api('/api/v1/entities?limit=1000'),
-        api('/api/v1/relationships'),
+        api('/api/v1/relationships?limit=5000'),
       ]);
       entities = Array.isArray(ents) ? ents : ents.entities ?? [];
       relationships = Array.isArray(rels) ? rels : rels.relationships ?? [];
@@ -218,6 +218,7 @@
     event: '#f56565',        // rouge
     indicator: '#9f7aea',    // violet
     topic: '#38b2ac',        // teal (wikipedia topics)
+    stub: '#4a5568',         // stub auto-créé (endpoint de relation)
     unknown: '#718096',      // gris
   };
 
@@ -309,6 +310,7 @@
   let nodeCount = 0;
   let edgeCount = 0;
   let showIsolated = false; // hide degree-0 nodes by default
+  let hideWeakLinks = true; // hide 'related_to' edges pointing to stubs
 
   // Cache resolved Wikidata labels (Q142 -> "France")
   const qidLabelCache = new Map();
@@ -400,7 +402,7 @@
       });
     });
 
-    // Edges: accept both old and new keys, no filtering
+    // Edges: accept both old and new keys, filter weak links if enabled
     const edges = relationships
       .map((r) => {
         const from = r.source_id ?? r.from_entity;
@@ -419,9 +421,32 @@
         },
       }));
 
-    // Compute degree for sizing and coloring
+    // Build set of stub node IDs (placeholder nodes or stub-typed entities)
+    const stubIds = new Set(
+      nodes
+        .filter((n) => n.data.placeholder === 'true' || n.data.type === 'stub')
+        .map((n) => n.data.id)
+    );
+
+    // Filter weak links: 'related_to' edges pointing to stubs.
+    // Strong edges (organization, location, participants...) always kept.
+    const WEAK_REL_TYPES = new Set(['related', 'related_to', 'related topic', 'mentions']);
+    const filteredEdges = hideWeakLinks
+      ? edges.filter((e) => {
+          const isWeak = WEAK_REL_TYPES.has((e.data.relType ?? '').toLowerCase());
+          const touchesStub = stubIds.has(e.data.target) || stubIds.has(e.data.source);
+          return !(isWeak && touchesStub);
+        })
+      : edges;
+
+    // Keep stub nodes that lost all their edges from being orphaned:
+    // if a node is only connected via filtered-out edges, drop it too (unless focus hub)
+    const keptIds = new Set();
+    filteredEdges.forEach((e) => { keptIds.add(e.data.source); keptIds.add(e.data.target); });
+
+    // Compute degree from FILTERED edges (weak links don't count)
     const deg = new Map();
-    edges.forEach((e) => {
+    filteredEdges.forEach((e) => {
       deg.set(e.data.source, (deg.get(e.data.source) ?? 0) + 1);
       deg.set(e.data.target, (deg.get(e.data.target) ?? 0) + 1);
     });
@@ -429,13 +454,13 @@
     // Find max degree for heat map scaling
     const maxDegree = Math.max(...deg.values(), 0);
 
-    // Filter isolated nodes (degree 0) unless explicitly shown
+    // Filter isolated nodes (degree 0 in filtered graph) unless explicitly shown
     const visibleNodes = showIsolated
       ? nodes
       : nodes.filter((n) => (deg.get(n.data.id) ?? 0) > 0 || n.data.id === focusHubId);
 
-    // Cluster colors: hubs vivid, children fade by BFS distance
-    const { color: clusterColor, hubIds } = assignClusterColors(visibleNodes, edges, deg, maxDegree);
+    // Cluster colors based on filtered edges
+    const { color: clusterColor, hubIds } = assignClusterColors(visibleNodes, filteredEdges, deg, maxDegree);
 
     visibleNodes.forEach((n) => {
       const d = deg.get(n.data.id) ?? 0;
@@ -448,7 +473,7 @@
     });
 
     nodeCount = visibleNodes.length;
-    edgeCount = edges.length;
+    edgeCount = filteredEdges.length;
     const hiddenCount = nodes.length - visibleNodes.length;
 
     const showEdgeLabel = edgeCount < 30;
@@ -472,7 +497,7 @@
 
     cy = cytoscape({
       container: graphEl,
-      elements: [...visibleNodes, ...edges],
+      elements: [...visibleNodes, ...filteredEdges],
       style: [
         {
           selector: 'node',
@@ -593,6 +618,30 @@
     return map[(t ?? '').toLowerCase()] ?? '◆';
   }
 
+  async function loadSources() {
+    try {
+      const s = await api('/api/v1/sources');
+      allSources = Array.isArray(s) ? s : [];
+      const wanted = new Set(DEFAULT_SOURCES);
+      selectedSources = new Set(allSources.filter((x) => wanted.has(x)));
+      if (selectedSources.size === 0) selectedSources = new Set(allSources);
+    } catch {
+      allSources = [];
+    }
+  }
+
+  async function reloadPlugins() {
+    try {
+      const r = await api('/api/v1/plugins/reload', { method: 'POST' });
+      await loadSources();
+      if (r.failed?.length) {
+        error = `Plugins en échec: ${r.failed.map((f) => f.name).join(', ')}`;
+      }
+    } catch (e) {
+      error = `Reload plugins échoué : ${e.message}`;
+    }
+  }
+
   onMount(async () => {
     try {
       const h = await api('/health');
@@ -601,17 +650,7 @@
       health = 'hors ligne';
     }
     // Load sources, set smart defaults
-    try {
-      const s = await api('/api/v1/sources');
-      allSources = Array.isArray(s) ? s : [];
-      // Pre-select fast/stable ones
-      const wanted = new Set(DEFAULT_SOURCES);
-      selectedSources = new Set(allSources.filter((x) => wanted.has(x)));
-      // Fallback: take all if none of defaults found
-      if (selectedSources.size === 0) selectedSources = new Set(allSources);
-    } catch {
-      allSources = [];
-    }
+    await loadSources();
     search();
   });
 </script>
@@ -669,6 +708,9 @@
           {s}
         </button>
       {/each}
+      <button type="button" class="chip reload" on:click={reloadPlugins} title="Recharger les plugins (hot-reload)">
+        ♻️ reload
+      </button>
     </div>
   {/if}
 
@@ -711,6 +753,9 @@
       <button class="secondary small" on:click={() => { showIsolated = !showIsolated; renderGraph(); }} title="Afficher/masquer les entités sans lien">
         {showIsolated ? '👁️ Masquer orphelins' : '👁️‍🗨️ Tout afficher'}
       </button>
+      <button class="secondary small" on:click={() => { hideWeakLinks = !hideWeakLinks; renderGraph(); }} title="Masquer les liens 'related' vers stubs (bruit Wikipedia)">
+        {hideWeakLinks ? '🔗 Liens forts' : '🔗 Tous liens'}
+      </button>
       <select bind:value={graphLayout} on:change={renderGraph}>
         <option value="cose">cose</option>
         <option value="breadthfirst">hiérarchie</option>
@@ -724,7 +769,7 @@
       {#if selectedNode}
         <aside class="node-panel">
           <div class="panel-head">
-            <h3>{selectedNode.label}</h3>
+            <h3>{selectedNode.label ?? selectedNode.id ?? 'Entité'}</h3>
             <button class="close" on:click={() => (selectedNode = null)}>×</button>
           </div>
           <div class="panel-body">
@@ -739,6 +784,21 @@
               <button class="secondary small" on:click={() => { query = selectedNode.label; ingestOnline = true; view = 'list'; search(); }}>
                 🔎 Explorer depuis ce nœud
               </button>
+              {#if selectedNode.placeholder === 'true' || selectedNode.type === 'stub'}
+                <button
+                  class="secondary small enrich"
+                  on:click={async () => {
+                    query = selectedNode.label;
+                    ingestOnline = true;
+                    await search();
+                    // Re-render graph to pick up upgraded entity
+                    if (view === 'graph' || view === 'focus') { await loadGraph(); }
+                  }}
+                  title="Lance une recherche en ligne pour remplacer ce stub par une vraie entité"
+                >
+                  ⬆️ Enrichir ce stub
+                </button>
+              {/if}
             </div>
           </div>
         </aside>
@@ -851,9 +911,15 @@
   button.small { padding: 0.4rem 0.75rem; font-size: 0.85rem; }
   .graph-container { display: flex; gap: 1rem; align-items: stretch; }
   .node-panel {
-    width: 320px; background: #1a202c; border: 1px solid #c9a22733;
+    width: 320px;
+    min-width: 280px;
+    flex-shrink: 0;
+    background: #1a202c; border: 1px solid #c9a22733;
     border-radius: 10px; padding: 1rem 1.25rem; overflow-y: auto; max-height: 70vh;
+    /* keep panel readable even on narrow viewports */
+    word-break: break-word;
   }
+  .node-panel .desc { word-break: break-word; }
   .panel-head { display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem; }
   .panel-head h3 { margin: 0; font-size: 1.1rem; color: #c9a227; }
   .close {

@@ -37,6 +37,25 @@ class UNComtradePlugin(DataSourcePlugin):
         "australia": "AUS", "south korea": "KOR", "korea": "KOR",
     }
 
+    # M49 numeric code → country name (main trading partners; preview API returns codes only)
+    M49_NAMES = {
+        "0": "World", "156": "China", "842": "United States", "276": "Germany",
+        "251": "France", "826": "United Kingdom", "380": "Italy", "724": "Spain",
+        "528": "Netherlands", "56": "Belgium", "616": "Poland", "792": "Turkey",
+        "392": "Japan", "699": "India", "76": "Brazil", "710": "South Africa",
+        "682": "Saudi Arabia", "804": "Ukraine", "376": "Israel", "818": "Egypt",
+        "504": "Morocco", "554": "New Zealand", "36": "Australia", "410": "South Korea",
+        "124": "Canada", "484": "Mexico", "566": "Nigeria", "12": "Algeria",
+        "756": "Switzerland", "40": "Austria", "208": "Denmark", "246": "Finland",
+        "300": "Greece", "372": "Ireland", "578": "Norway", "620": "Portugal",
+        "752": "Sweden", "203": "Czech Republic", "348": "Hungary", "642": "Romania",
+        "100": "Bulgaria", "191": "Croatia", "703": "Slovakia", "705": "Slovenia",
+        "233": "Estonia", "428": "Latvia", "440": "Lithuania", "643": "Russia",
+        "784": "United Arab Emirates", "634": "Qatar", "414": "Kuwait", "364": "Iran",
+        "368": "Iraq", "400": "Jordan", "422": "Lebanon", "760": "Syria",
+        "887": "Yemen", "760": "Syria", "512": "Oman", "48": "Bahrain",
+    }
+
     async def validate(self) -> bool:
         try:
             async with aiohttp.ClientSession() as session:
@@ -71,6 +90,7 @@ class UNComtradePlugin(DataSourcePlugin):
         year = query.get("year", 2023)
 
         country_code = self._to_country_code(raw)
+        print(f"[uncomtrade] raw={raw!r} -> iso3={country_code}")
         if not country_code:
             # Unknown country — return empty
             return results
@@ -95,7 +115,7 @@ class UNComtradePlugin(DataSourcePlugin):
                 params = {
                     "reporterCode": reporter,
                     "period": str(year),
-                    "partnerCode": "0",  # 0 = world total; alternative: each partner
+                    # partnerCode omitted → all bilateral partners (each record = one partner)
                     "flowCode": flow_code,
                     "partner2Code": "0",
                     "customsCode": "C00",
@@ -111,13 +131,15 @@ class UNComtradePlugin(DataSourcePlugin):
                     ) as resp:
                         if resp.status != 200:
                             continue
-                        data = await resp.json()
+                        data = await resp.json(content_type=None)  # API returns empty Content-Type
                 except Exception:
                     continue
 
                 records = data.get("data") or []
                 for rec in records[:30]:
-                    partner_name = rec.get("partnerDesc") or rec.get("partner")
+                    # Preview API returns codes only — map M49 code to country name
+                    partner_code = str(rec.get("partnerCode") or "")
+                    partner_name = self.M49_NAMES.get(partner_code)
                     reporter_name = rec.get("reporterDesc") or raw.title()
                     value_usd = rec.get("primaryValue")
                     if not partner_name or partner_name == "World":

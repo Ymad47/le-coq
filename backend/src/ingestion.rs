@@ -81,6 +81,22 @@ pub async fn ingest_data(
                     let properties = item.get("properties").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
                     let sources: Vec<String> = item.get("sources").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
 
+                    // Stub endpoints to satisfy FK (same logic as ingest_from_source)
+                    for endpoint in [from, to] {
+                        if endpoint.is_empty() { continue; }
+                        let _ = sqlx::query(
+                            r#"INSERT INTO entities (id, name, entity_type, properties, sources, created_at)
+                               VALUES ($1, $2, 'stub', $3, $4, NOW())
+                               ON CONFLICT (id) DO NOTHING"#
+                        )
+                        .bind(endpoint)
+                        .bind(stub_name_from_id(endpoint))
+                        .bind(sqlx::types::Json(serde_json::json!({"stub": true})))
+                        .bind(&sources)
+                        .execute(&state.postgres)
+                        .await;
+                    }
+
                     let res = sqlx::query(
                         r#"INSERT INTO relationships (from_entity, to_entity, relationship_type, properties, confidence, sources)
                            VALUES ($1, $2, $3, $4, $5, $6)"#
@@ -163,12 +179,13 @@ pub async fn list_sources(
 }
 
 /// Core ingestion logic reusable from other handlers (e.g. smart search).
-/// Fetches from source, upserts entities/relations in DB. Returns count of new items.
+/// Fetches from source, upserts entities/relations in DB.
+/// Returns (count of inserted items, list of per-relation drop errors).
 pub async fn ingest_from_source(
     state: Arc<AppState>,
     source: &str,
     query: Value,
-) -> Result<usize, String> {
+) -> Result<(usize, Vec<String>), String> {
     let result = call_plugin_method(source, "fetch", &query)
         .map_err(|e| format!("Failed to call plugin {}: {}", source, e))?;
     
@@ -178,14 +195,15 @@ pub async fn ingest_from_source(
     
     let items = result.data.unwrap_or(Value::Array(vec![]));
     let Value::Array(items) = items else {
-        return Ok(0);
+        return Ok((0, Vec::new()));
     };
     
     let mut inserted = 0usize;
-    
+    let mut errors: Vec<String> = Vec::new();
+
     for item in items {
         let is_relation = item.get("from_entity").is_some() && item.get("to_entity").is_some();
-        
+
         if is_relation {
             let from = item.get("from_entity").and_then(|v| v.as_str()).unwrap_or("");
             let to = item.get("to_entity").and_then(|v| v.as_str()).unwrap_or("");
@@ -193,7 +211,25 @@ pub async fn ingest_from_source(
             let confidence = item.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
             let properties = item.get("properties").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
             let sources: Vec<String> = item.get("sources").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-            
+
+            // Ensure endpoint entities exist (FK constraint on relationships).
+            // Create minimal stubs for referenced-but-not-yet-ingested entities.
+            for endpoint in [from, to] {
+                if endpoint.is_empty() { continue; }
+                let name = stub_name_from_id(endpoint);
+                let _ = sqlx::query(
+                    r#"INSERT INTO entities (id, name, entity_type, properties, sources, created_at)
+                       VALUES ($1, $2, 'stub', $3, $4, NOW())
+                       ON CONFLICT (id) DO NOTHING"#
+                )
+                .bind(endpoint)
+                .bind(&name)
+                .bind(sqlx::types::Json(serde_json::json!({"stub": true})))
+                .bind(&sources)
+                .execute(&state.postgres)
+                .await; // ignore errors: next INSERT will surface them if critical
+            }
+
             let res = sqlx::query(
                 r#"INSERT INTO relationships (from_entity, to_entity, relationship_type, properties, confidence, sources)
                    VALUES ($1, $2, $3, $4, $5, $6)"#
@@ -202,7 +238,14 @@ pub async fn ingest_from_source(
             .bind(sqlx::types::Json(&properties)).bind(confidence).bind(&sources)
             .execute(&state.postgres)
             .await;
-            if res.is_ok() { inserted += 1; }
+            match res {
+                Ok(_) => inserted += 1,
+                Err(e) => {
+                    let msg = format!("relation {} -> {}: {}", from, to, e);
+                    tracing::warn!("ingest relation dropped: {}", msg);
+                    errors.push(msg);
+                }
+            }
             continue;
         }
         
@@ -240,6 +283,23 @@ pub async fn ingest_from_source(
             Err(e) => tracing::error!("Failed to parse entity: {}", e),
         }
     }
-    
-    Ok(inserted)
+
+    Ok((inserted, errors))
+}
+
+/// Human-readable stub name derived from a plugin-generated entity id.
+/// e.g. "wiki_South_Africa" -> "South Africa", "wd_item_Q142" -> "Q142".
+fn stub_name_from_id(id: &str) -> String {
+    let stripped = id
+        .strip_prefix("wiki_")
+        .map(|s| s.replace('_', " "))
+        .or_else(|| id.strip_prefix("wd_item_").map(|s| s.to_string()))
+        .or_else(|| id.strip_prefix("eurostat_country_").map(|s| s.replace('_', " ")))
+        .unwrap_or_else(|| id.to_string());
+    let trimmed = stripped.trim();
+    if trimmed.is_empty() {
+        id.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }

@@ -25,6 +25,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/entities/:id", get(get_entity))
         .route("/api/v1/relationships", get(list_relationships).post(create_relationship))
         .route("/api/v1/search", get(smart_search).post(search))
+        .route("/api/v1/topic", get(topic_search))
         .route("/api/v1/ingest", post(ingest_data))
         .route("/api/v1/sources", get(list_sources))
         .route("/api/v1/plugins/health", get(plugins_health))
@@ -264,10 +265,19 @@ async fn get_entity(
     }).ok_or(StatusCode::NOT_FOUND)
 }
 
+#[derive(Deserialize)]
+struct RelQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
 async fn list_relationships(
     State(state): State<Arc<AppState>>,
+    query: axum::extract::Query<RelQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, StatusCode> {
-    let rows = sqlx::query("SELECT id, from_entity, to_entity, relationship_type, properties, confidence FROM relationships LIMIT 100")
+    let limit = query.limit.unwrap_or(100).min(5000) as i32;
+    let rows = sqlx::query("SELECT id, from_entity, to_entity, relationship_type, properties, confidence FROM relationships LIMIT $1")
+        .bind(limit)
         .fetch_all(&state.postgres)
         .await
         .map_err(|e| {
@@ -449,7 +459,11 @@ async fn smart_search(
 
         for handle in handles {
             match handle.await {
-                Ok(Ok(count)) => new_ingested += count,
+                Ok(Ok((count, rel_errors))) => {
+                    new_ingested += count;
+                    // surface relation drops (cap to avoid bloating the response)
+                    errors.extend(rel_errors.into_iter().take(20).map(|e| format!("{} dropped", e)));
+                }
                 Ok(Err(e)) => errors.push(e),
                 Err(e) => errors.push(format!("task error: {}", e)),
             }
@@ -481,6 +495,115 @@ async fn smart_search(
         "new_items": new_ingested,
         "errors": errors,
         "results": results,
+    })))
+}
+
+/// GET /api/v1/topic?q=...
+/// Quality-focused search: finds entities matching a theme, then returns only
+/// "strong" relations between those entities (typed relations, not Wikipedia's
+/// generic `related`). Ranks by a strength score.
+async fn topic_search(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<SmartSearchQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let q = params.q.trim().to_string();
+    if q.is_empty() {
+        return Err((StatusCode::BAD_REQUEST, "q is required".into()));
+    }
+
+    // Split q into terms for coverage scoring
+    let terms: Vec<String> = q.to_lowercase().split_whitespace().map(|s| s.to_string()).collect();
+    let pattern = format!("%{}%", terms.join("%"));
+
+    // 1) Relevant entities: name or properties contain ALL terms (ranked by coverage)
+    let rows = sqlx::query(
+        r#"SELECT id, name, entity_type, properties,
+                  (LENGTH(name) - LENGTH(REPLACE(LOWER(name), $2, '')))::float / GREATEST(LENGTH($2),1) as coverage
+           FROM entities
+           WHERE LOWER(name) LIKE $1 OR LOWER(properties::text) LIKE $1
+           ORDER BY coverage DESC, name
+           LIMIT 100"#
+    )
+    .bind(&pattern)
+    .bind(&q.to_lowercase())
+    .fetch_all(&state.postgres)
+    .await
+    .map_err(|e| {
+        tracing::error!("topic entities DB error: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
+    })?;
+
+    let entity_ids: Vec<String> = rows.iter().map(|r| r.get::<String, _>("id")).collect();
+    if entity_ids.is_empty() {
+        return Ok(Json(serde_json::json!({
+            "theme": q,
+            "entities": [],
+            "relations": [],
+            "count": 0,
+        })));
+    }
+
+    // 2) Relations between relevant entities ONLY (both endpoints in the set)
+    let rel_rows = sqlx::query(
+        r#"SELECT id, from_entity, to_entity, relationship_type, properties, confidence, sources
+           FROM relationships
+           WHERE from_entity = ANY($1) AND to_entity = ANY($1)"#
+    )
+    .bind(&entity_ids)
+    .fetch_all(&state.postgres)
+    .await
+    .map_err(|e| {
+        tracing::error!("topic relations DB error: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
+    })?;
+
+    // 3) Score relation strength
+    //    +3 if NOT a generic weak type (related/mentions/etc)
+    //    +confidence (0..1)
+    //    +1 if either endpoint is a stub (penalize stubs)
+    let weak_types = ["related", "related_to", "related topic", "mentions"];
+    let mut scored: Vec<serde_json::Value> = rel_rows
+        .iter()
+        .map(|r| {
+            let rel_type: String = r.get("relationship_type");
+            let conf: f32 = r.get("confidence");
+            let is_weak = weak_types.contains(&rel_type.to_lowercase().as_str());
+            let strength = if is_weak { 0.0 } else { 3.0 } + conf;
+            serde_json::json!({
+                "id": r.get::<uuid::Uuid, _>("id").to_string(),
+                "from": r.get::<String, _>("from_entity"),
+                "to": r.get::<String, _>("to_entity"),
+                "type": rel_type,
+                "strength": strength,
+                "confidence": conf,
+                "properties": r.get::<serde_json::Value, _>("properties"),
+            })
+        })
+        .collect();
+
+    // Sort by strength desc
+    scored.sort_by(|a, b| {
+        let sa = a.get("strength").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let sb = b.get("strength").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        sb.partial_cmp(&sa).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let entities: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| serde_json::json!({
+            "id": r.get::<String, _>("id"),
+            "name": r.get::<String, _>("name"),
+            "entity_type": r.get::<String, _>("entity_type"),
+            "properties": r.get::<serde_json::Value, _>("properties"),
+        }))
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "theme": q,
+        "entities": entities,
+        "relations": scored,
+        "count": entities.len(),
+        "relation_count": scored.len(),
     })))
 }
 
