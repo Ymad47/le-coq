@@ -36,17 +36,18 @@ class GDELTPlugin(DataSourcePlugin):
                     params=params,
                     timeout=aiohttp.ClientTimeout(total=60)
                 ) as resp:
-                    if resp.status == 429:
+                    content = await resp.text()
+                    if resp.status == 429 or "Please limit requests" in content:
                         print(f"GDELT rate limited, retry {attempt + 1}/{max_retries}...")
                         continue
                     if resp.status != 200:
                         print(f"GDELT error: {resp.status}")
                         return None
-                    content = await resp.text()
                     if "articles" not in content:
                         print("GDELT: Invalid response format")
                         return None
-                    return await resp.json()
+                    import json as _json
+                    return _json.loads(content)
             except asyncio.TimeoutError:
                 print(f"GDELT timeout, retry {attempt + 1}/{max_retries}...")
                 continue
