@@ -23,6 +23,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/health", get(health_check))
         .route("/api/v1/entities", get(list_entities).post(create_entity))
         .route("/api/v1/entities/:id", get(get_entity))
+        .route("/api/v1/entities/:id/summary", get(entity_summary))
         .route("/api/v1/relationships", get(list_relationships).post(create_relationship))
         .route("/api/v1/search", get(smart_search).post(search))
         .route("/api/v1/topic", get(topic_search))
@@ -263,6 +264,159 @@ async fn get_entity(
             properties: r.get("properties"),
         })
     }).ok_or(StatusCode::NOT_FOUND)
+}
+
+/// GET /api/v1/entities/:id/summary
+/// Narrative summary auto-generated from entity + its relations.
+/// No LLM — SQL aggregations + templating. Local & instant.
+async fn entity_summary(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // 1) Fetch entity
+    let row = sqlx::query(
+        "SELECT id, name, entity_type, properties FROM entities WHERE id = $1"
+    )
+    .bind(&id)
+    .fetch_optional(&state.postgres)
+    .await
+    .map_err(|e| {
+        tracing::error!("entity fetch error: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "DB error".into())
+    })?;
+
+    let Some(row) = row else {
+        return Err((StatusCode::NOT_FOUND, "entity not found".into()));
+    };
+
+    let name: String = row.get("name");
+    let entity_type: String = row.get("entity_type");
+    let props: serde_json::Value = row.get("properties");
+    let description = props
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // 2) Count relations by endpoint type (outgoing + incoming)
+    //    Classify neighbor entity_type, grouped.
+    let type_breakdown = sqlx::query(
+        r#"SELECT neighbor.entity_type, COUNT(*) as n
+           FROM relationships r
+           JOIN entities neighbor ON (
+             neighbor.id = CASE WHEN r.from_entity = $1 THEN r.to_entity ELSE r.from_entity END
+           )
+           WHERE r.from_entity = $1 OR r.to_entity = $1
+           GROUP BY neighbor.entity_type
+           ORDER BY n DESC"#
+    )
+    .bind(&id)
+    .fetch_all(&state.postgres)
+    .await
+    .map_err(|e| {
+        tracing::error!("type breakdown error: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "DB error".into())
+    })?;
+
+    // 3) Top 3 relation types (excluding generic)
+    let rel_types = sqlx::query(
+        r#"SELECT relationship_type, COUNT(*) as n
+           FROM relationships
+           WHERE (from_entity = $1 OR to_entity = $1)
+             AND relationship_type NOT IN ('related', 'related_to', 'related topic', 'mentions')
+           GROUP BY relationship_type
+           ORDER BY n DESC
+           LIMIT 3"#
+    )
+    .bind(&id)
+    .fetch_all(&state.postgres)
+    .await
+    .map_err(|e| {
+        tracing::error!("rel types error: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "DB error".into())
+    })?;
+
+    // 4) Strongest neighbor (highest total confidence across shared relations)
+    let top_neighbor = sqlx::query(
+        r#"SELECT neighbor.id, neighbor.name, SUM(r.confidence) as weight, COUNT(*) as rels
+           FROM relationships r
+           JOIN entities neighbor ON (
+             neighbor.id = CASE WHEN r.from_entity = $1 THEN r.to_entity ELSE r.from_entity END
+           )
+           WHERE (r.from_entity = $1 OR r.to_entity = $1)
+             AND r.relationship_type NOT IN ('related', 'related_to', 'mentions')
+           GROUP BY neighbor.id, neighbor.name
+           ORDER BY weight DESC
+           LIMIT 1"#
+    )
+    .bind(&id)
+    .fetch_optional(&state.postgres)
+    .await
+    .map_err(|e| {
+        tracing::error!("top neighbor error: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "DB error".into())
+    })?;
+
+    // 5) Build narrative text
+    let mut sentences: Vec<String> = Vec::new();
+
+    // Intro: first sentence of description, or type + name
+    let first_sentence = description
+        .split('.')
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| s.len() > 20);
+    if let Some(s) = first_sentence {
+        sentences.push(format!("{}.", s));
+    } else {
+        sentences.push(format!("{} ({}).", name, entity_type));
+    }
+
+    // Link stats
+    let total_links: i64 = type_breakdown
+        .iter()
+        .map(|r| r.get::<i64, _>("n"))
+        .sum();
+    if total_links > 0 {
+        let breakdown_str: Vec<String> = type_breakdown
+            .iter()
+            .take(4)
+            .map(|r| format!("{} {}", r.get::<i64, _>("n"), r.get::<String, _>("entity_type").to_lowercase()))
+            .collect();
+        sentences.push(format!(
+            "Lié à {} entités ({}).",
+            total_links,
+            breakdown_str.join(", ")
+        ));
+    } else {
+        sentences.push("Aucune relation connue pour le moment.".to_string());
+    }
+
+    // Dominant relation types
+    if !rel_types.is_empty() {
+        let types: Vec<String> = rel_types
+            .iter()
+            .map(|r| format!("{} ({})", r.get::<String, _>("relationship_type").replace('_', " "), r.get::<i64, _>("n")))
+            .collect();
+        sentences.push(format!("Types de liens: {}.", types.join(", ")));
+    }
+
+    // Strongest neighbor
+    if let Some(r) = top_neighbor {
+        let neighbor_name: String = r.get("name");
+        let weight: f64 = r.get("weight");
+        sentences.push(format!(
+            "Lien le plus fort: {} (confiance {:.0}%).",
+            neighbor_name,
+            weight * 50.0 // rough normalization: avg confidence ~0.5-1 → ~50%+
+        ));
+    }
+
+    Ok(Json(serde_json::json!({
+        "id": id,
+        "name": name,
+        "summary": sentences.join(" "),
+    })))
 }
 
 #[derive(Deserialize)]

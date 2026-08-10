@@ -7,7 +7,7 @@
   let query = '';
   let loading = false;
   let error = '';
-  let view = 'list'; // 'list' | 'graph' | 'focus'
+  let view = 'list'; // 'list' | 'graph' | 'focus' | 'map'
   let focusHubId = null;
   let health = '';
 
@@ -25,6 +25,12 @@
   let graphEl;
   /** @type {import('cytoscape').Core | null} */
   let cy = null;
+  /** @type {HTMLDivElement} */
+  let mapEl;
+  /** @type {any} */
+  let worldMap = null;
+  /** @type {{code: string, name: string, entities: any[], count?: number} | null} */
+  let mapInfo = null;
 
   async function api(path, opts = {}) {
     const resp = await fetch(path, opts);
@@ -126,27 +132,36 @@
   }
 
   // Focus: graph-centric view centered on the best-matching node for current query
-  async function loadFocus() {
-    if (!query.trim()) {
+  // skipSearch=true → skip online fetch (entity already in DB, e.g. opened from drawer/article)
+  // directHubId → exact entity id to center on (skips name matching entirely)
+  async function loadFocus(skipSearch = false, directHubId = null) {
+    if (!query.trim() && !directHubId) {
       error = 'Entrez une recherche d\'abord pour utiliser Vue Focus.';
       return;
     }
     loading = true;
-    searching = true;
+    searching = !skipSearch;
     error = '';
     newItems = 0;
     searchErrors = [];
 
     try {
-      // 1) Smart search first (ingests + refreshes)
-      const params = new URLSearchParams({ q: query.trim(), online: ingestOnline });
-      if (ingestOnline && selectedSources.size > 0) {
-        params.set('sources', Array.from(selectedSources).join(','));
+      // 1) Smart search (skippable — useful when we know the entity exists)
+      const qLower = query.trim().toLowerCase();
+      let hub = null;
+      if (!skipSearch) {
+        const params = new URLSearchParams({ q: query.trim(), online: ingestOnline });
+        if (ingestOnline && selectedSources.size > 0) {
+          params.set('sources', Array.from(selectedSources).join(','));
+        }
+        const data = await api(`/api/v1/search?${params}`);
+        const results = data.results ?? [];
+        newItems = data.new_items ?? 0;
+        searchErrors = data.errors ?? [];
+        hub = results.find((r) => (r.name ?? '').toLowerCase() === qLower)
+          ?? results.find((r) => (r.name ?? '').toLowerCase().startsWith(qLower))
+          ?? results[0];
       }
-      const data = await api(`/api/v1/search?${params}`);
-      const results = data.results ?? [];
-      newItems = data.new_items ?? 0;
-      searchErrors = data.errors ?? [];
 
       // 2) Load full graph for visualization
       const [ents, rels] = await Promise.all([
@@ -156,14 +171,17 @@
       entities = Array.isArray(ents) ? ents : ents.entities ?? [];
       relationships = Array.isArray(rels) ? rels : rels.relationships ?? [];
 
-      // 3) Identify hub: prefer 1st match by name; fallback to highest degree
-      const qLower = query.trim().toLowerCase();
-      let hub = null;
-      // exact / starts-with
-      hub = results.find((r) => (r.name ?? '').toLowerCase() === qLower)
-        ?? results.find((r) => (r.name ?? '').toLowerCase().startsWith(qLower))
-        ?? results[0];
-      focusHubId = hub?.id ?? null;
+      // 3) Hub: direct ID wins, else entity match, else graph entity
+      if (directHubId) {
+        focusHubId = directHubId;
+      } else {
+        if (!hub) {
+          hub = entities.find((e) => (e.name ?? '').toLowerCase() === qLower)
+            ?? entities.find((e) => (e.name ?? '').toLowerCase().startsWith(qLower))
+            ?? entities.find((e) => (e.name ?? '').toLowerCase().includes(qLower));
+        }
+        focusHubId = hub?.id ?? null;
+      }
 
       // 4) Layout: concentric centered on hub
       graphLayout = 'concentric';
@@ -209,6 +227,151 @@
     searching = false;
   }
 
+  // Country name → ISO3 code (aligned with jsvectormap world_merc paths)
+  const NAME_TO_ISO = {
+    'France': 'FRA', 'United States': 'USA', 'United States of America': 'USA',
+    'China': 'CHN', 'Germany': 'DEU', 'United Kingdom': 'GBR', 'UK': 'GBR',
+    'Russia': 'RUS', 'Brazil': 'BRA', 'India': 'IND', 'Japan': 'JPN',
+    'South Africa': 'ZAF', 'Canada': 'CAN', 'Mexico': 'MEX', 'Australia': 'AUS',
+    'South Korea': 'KOR', 'Korea': 'KOR',
+    'Spain': 'ESP', 'Italy': 'ITA', 'Belgium': 'BEL', 'Netherlands': 'NLD',
+    'Poland': 'POL', 'Turkey': 'TUR', 'Saudi Arabia': 'SAU',
+    'United Arab Emirates': 'ARE', 'Qatar': 'QAT',
+    'Egypt': 'EGY', 'Morocco': 'MAR', 'Algeria': 'DZA', 'Nigeria': 'NGA',
+    'Kenya': 'KEN', 'Ghana': 'GHA', 'Ethiopia': 'ETH',
+    'Switzerland': 'CHE', 'Austria': 'AUT', 'Denmark': 'DNK', 'Finland': 'FIN',
+    'Greece': 'GRC', 'Ireland': 'IRL', 'Norway': 'NOR', 'Portugal': 'PRT',
+    'Sweden': 'SWE', 'Czech Republic': 'CZE', 'Hungary': 'HUN', 'Romania': 'ROU',
+    'Bulgaria': 'BGR', 'Croatia': 'HRV', 'Slovakia': 'SVK', 'Slovenia': 'SVN',
+    'Estonia': 'EST', 'Latvia': 'LVA', 'Lithuania': 'LTU', 'Ukraine': 'UKR',
+    'Israel': 'ISR', 'Iran': 'IRN', 'Iraq': 'IRQ', 'Jordan': 'JOR',
+    'Lebanon': 'LBN', 'Syria': 'SYR', 'Yemen': 'YEM', 'Oman': 'OMN',
+    'Bahrain': 'BHR', 'Kuwait': 'KWT', 'New Zealand': 'NZL',
+    'Argentina': 'ARG', 'Chile': 'CHL', 'Colombia': 'COL', 'Peru': 'PER',
+    'Venezuela': 'VEN', 'Pakistan': 'PAK', 'Bangladesh': 'BGD',
+    'Philippines': 'PHL', 'Indonesia': 'IDN', 'Malaysia': 'MYS',
+    'Singapore': 'SGP', 'Thailand': 'THA', 'Vietnam': 'VNM',
+    'Taiwan': 'TWN', 'Hong Kong': 'HKG',
+  };
+
+  // Map view: world choropleth — countries colored by entity count
+  async function loadMap() {
+    loading = true;
+    error = '';
+    view = 'map';
+    try {
+      const ents = await api('/api/v1/entities?limit=1000');
+      const list = Array.isArray(ents) ? ents : ents.entities ?? [];
+      entities = list;
+
+      // Count entities per ISO country code
+      const counts = new Map();
+      for (const e of list) {
+        let iso = e.properties?.iso3 ?? e.properties?.iso3_code;
+        if (!iso && e.id?.startsWith('uncomtrade_country_')) {
+          // Name in ID — map through NAME_TO_ISO
+          const name = e.id.slice('uncomtrade_country_'.length).replace(/_/g, ' ');
+          iso = NAME_TO_ISO[name];
+        }
+        if (!iso && e.id?.startsWith('eurostat_country_')) {
+          // FR, DE etc (2-letter)
+          const two = e.id.slice('eurostat_country_'.length).split('_')[0]?.toUpperCase();
+          const ISO2_TO_3 = { FR: 'FRA', DE: 'DEU', IT: 'ITA', ES: 'ESP', GB: 'GBR', NL: 'NLD', BE: 'BEL', PL: 'POL', PT: 'PRT', AT: 'AUT', CH: 'CHE', SE: 'SWE', NO: 'NOR', DK: 'DNK', FI: 'FIN', GR: 'GRC', IE: 'IRL', RO: 'ROU', CZ: 'CZE', HU: 'HUN', SK: 'SVK', SI: 'SVN', BG: 'BGR', HR: 'HRV', EE: 'EST', LV: 'LVA', LT: 'LTU', LU: 'LUX', MT: 'MLT', CY: 'CYP' };
+          iso = ISO2_TO_3[two];
+        }
+        if (!iso || !/^[A-Z]{3}$/.test(iso)) continue;
+        counts.set(iso, (counts.get(iso) ?? 0) + 1);
+      }
+
+      console.log('[map] country counts:', Object.fromEntries(counts));
+      await tick();
+      renderMap(counts);
+    } catch (e) {
+      error = `Vue carte échouée : ${e.message}`;
+    }
+    loading = false;
+  }
+
+  async function renderMap(counts) {
+    if (!mapEl) return;
+    try {
+      // Lazy-load jsvectormap & world map once
+      const mod = await import('jsvectormap');
+      await import('jsvectormap/dist/maps/world-merc.js');
+      // jsvectormap reads window.jsVectorMap
+      const jsVectorMap = mod.default ?? window.jsVectorMap;
+      if (!jsVectorMap) { error = 'jsvectormap non chargé'; return; }
+      worldMap?.destroy?.();
+      const values = Object.fromEntries(counts);
+      const max = Math.max(...counts.values(), 1);
+
+      // Track the region names locally (independent from jsvectormap internals)
+      const regionNames = new Map();
+
+      worldMap = new jsVectorMap({
+        selector: mapEl,
+        map: 'world_merc',
+        backgroundColor: 'transparent',
+        regionStyle: {
+          initial: { fill: 'rgba(255,255,255,0.06)', stroke: 'rgba(255,255,255,0.12)', strokeWidth: 0.4 },
+          hover: { fill: '#14b8a6', fillOpacity: 0.75, stroke: 'rgba(255,255,255,0.3)' },
+          selected: { fill: '#2dd4bf', fillOpacity: 0.95 },
+        },
+        series: {
+          regions: [{
+            values,
+            scale: ['#1f2937', '#2dd4bf'],
+            normalizeFunction: 'linear',
+            min: 0,
+            max,
+          }],
+        },
+        onRegionTooltipShow: (evt, tooltip, code) => {
+          const n = counts.get(code) ?? 0;
+          const name = regionNames.get(code) ?? code;
+          tooltip.text(`${name} — ${n} entité${n !== 1 ? 's' : ''}`, true);
+        },
+        onRegionSelected: (evt, code, isSelected, selectedRegions) => {
+          if (!isSelected) return;
+          const n = counts.get(code) ?? 0;
+          const name = regionNames.get(code) ?? code;
+          if (n === 0) {
+            // No entities — show info but don't search
+            mapInfo = { code, name, entities: [] };
+            return;
+          }
+          // Open country detail panel with its entities
+          const countryEntities = entities.filter((e) => {
+            let iso = e.properties?.iso3 ?? e.properties?.iso3_code;
+            if (!iso && e.id?.startsWith('uncomtrade_country_')) {
+              const eName = e.id.slice('uncomtrade_country_'.length).replace(/_/g, ' ');
+              iso = NAME_TO_ISO[eName];
+            }
+            if (!iso && e.id?.startsWith('eurostat_country_')) {
+              const two = e.id.slice('eurostat_country_'.length).split('_')[0]?.toUpperCase();
+              const ISO2_TO_3 = { FR: 'FRA', DE: 'DEU', IT: 'ITA', ES: 'ESP', GB: 'GBR', NL: 'NLD', BE: 'BEL', PL: 'POL', PT: 'PRT', AT: 'AUT', CH: 'CHE', SE: 'SWE', NO: 'NOR', DK: 'DNK', FI: 'FIN', GR: 'GRC', IE: 'IRL', RO: 'ROU', CZ: 'CZE', HU: 'HUN', SK: 'SVK', SI: 'SVN', BG: 'BGR', HR: 'HRV', EE: 'EST', LV: 'LVA', LT: 'LTU', LU: 'LUX', MT: 'MLT', CY: 'CYP' };
+              iso = ISO2_TO_3[two];
+            }
+            return iso === code;
+          });
+          mapInfo = { code, name, entities: countryEntities, count: n };
+        },
+      });
+
+      // Pre-populate region names from the map data itself
+      try {
+        const paths = jsVectorMap.maps?.world_merc?.paths ?? {};
+        for (const [code, data] of Object.entries(paths)) {
+          if (data?.name) regionNames.set(code, data.name);
+        }
+      } catch (e) {
+        console.warn('[map] could not preload region names', e);
+      }
+    } catch (e) {
+      error = `Render map: ${e.message}`;
+    }
+  }
+
   // Color palette by entity type (cohérent, lisible)
   const TYPE_COLORS = {
     person: '#c9a227',       // doré (brand)
@@ -223,11 +386,11 @@
   };
 
   const EDGE_COLORS = {
-    parent_of: '#c9a227',
-    exports_to: '#4299e1',
-    imports_from: '#4299e1',
-    has_indicator: '#4a5568',
-    default: '#4a5568',
+    parent_of: '#2dd4bf',
+    exports_to: '#38bdf8',
+    imports_from: '#38bdf8',
+    has_indicator: 'rgba(255,255,255,0.2)',
+    default: 'rgba(255,255,255,0.15)',
   };
 
   // Cluster coloring: each top hub gets a stable random hue (seeded by ID),
@@ -306,11 +469,16 @@
   }
 
   let selectedNode = null;
+  let articleEntity = null; // entity open in article drawer (list view click)
+  let articleRelations = [];
+  let articleSummary = null; // narrative summary from /entities/:id/summary
   let graphLayout = 'cose';
   let nodeCount = 0;
   let edgeCount = 0;
   let showIsolated = false; // hide degree-0 nodes by default
   let hideWeakLinks = true; // hide 'related_to' edges pointing to stubs
+  let maxYear = new Date().getFullYear(); // temporal filter: show only items <= this year
+  const MIN_YEAR = 2000;
 
   // Cache resolved Wikidata labels (Q142 -> "France")
   const qidLabelCache = new Map();
@@ -347,6 +515,23 @@
   function colorForEdge(rel) {
     if (!rel) return EDGE_COLORS.default;
     return EDGE_COLORS[rel.toLowerCase()] ?? EDGE_COLORS.default;
+  }
+
+  // Extract year from properties (multiple possible fields)
+  function extractYear(props) {
+    if (!props) return null;
+    for (const key of ['year', 'period', 'refYear', 'date']) {
+      const v = props[key];
+      if (!v) continue;
+      const n = parseInt(v, 10);
+      if (!isNaN(n) && n >= 1900 && n <= 2100) return n;
+      // Try ISO date string 2024-03-15
+      if (typeof v === 'string') {
+        const m = v.match(/\b(19|20)\d{2}\b/);
+        if (m) { const y = parseInt(m[0], 10); return y >= 1900 && y <= 2100 ? y : null; }
+      }
+    }
+    return null;
   }
 
   async function renderGraph() {
@@ -402,15 +587,18 @@
       });
     });
 
-    // Edges: accept both old and new keys, filter weak links if enabled
+    // Edges: accept both old and new keys, filter weak links if enabled, then temporal filter
     const edges = relationships
       .map((r) => {
         const from = r.source_id ?? r.from_entity;
         const to = r.target_id ?? r.to_entity;
         const relType = r.relation_type ?? r.relationship_type ?? r.type ?? '';
-        return { from, to, relType, rawId: r.id };
+        const year = extractYear(r.properties);
+        return { from, to, relType, rawId: r.id, year };
       })
       .filter((e) => e.from && e.to)
+      // Temporal filter: drop edges dated after maxYear
+      .filter((e) => e.year === null || e.year <= maxYear)
       .map((e) => ({
         data: {
           id: e.rawId,
@@ -418,6 +606,7 @@
           target: e.to,
           label: e.relType,
           relType: e.relType,
+          year: e.year,
         },
       }));
 
@@ -507,7 +696,7 @@
               // Use heat map color if available (degree-based), otherwise type-based
               return ele.data('color') ?? colorForType(ele.data('type'));
             },
-            color: '#e8e6e3',
+            color: 'rgba(255,255,255,0.9)',
             'font-size': 10,
             'font-weight': 500,
             'text-valign': 'bottom',
@@ -517,7 +706,7 @@
             width: 'data(size)',
             height: 'data(size)',
             'border-width': 0,
-            'border-color': '#c9a227',
+            'border-color': 'rgba(255,255,255,0.25)',
           },
         },
         {
@@ -535,7 +724,7 @@
           selector: 'node[hot = "true"]',
           style: {
             'border-width': 3,
-            'border-color': '#f6ad37',
+            'border-color': '#2dd4bf',
             'border-opacity': 0.9,
           },
         },
@@ -543,15 +732,15 @@
           selector: 'node:selected',
           style: {
             'border-width': 3,
-            'border-color': '#c9a227',
-            'overlay-color': '#c9a227',
+            'border-color': 'rgba(255,255,255,0.25)',
+            'overlay-color': '#2dd4bf',
             'overlay-opacity': 0.15,
           },
         },
         {
           selector: 'node:active',
           style: {
-            'overlay-color': '#c9a227',
+            'overlay-color': '#2dd4bf',
             'overlay-opacity': 0.25,
           },
         },
@@ -564,7 +753,7 @@
             'target-arrow-shape': 'triangle',
             'curve-style': 'bezier',
             'font-size': 8,
-            color: '#a0aec0',
+            color: 'rgba(255,255,255,0.5)',
             width: (ele) => (ele.data('relType') === 'parent_of' ? 2.5 : 1.5),
             opacity: 0.85,
           },
@@ -618,6 +807,58 @@
     return map[(t ?? '').toLowerCase()] ?? '◆';
   }
 
+  async function openArticle(e) {
+    // Force re-render: null out first, then assign
+    articleEntity = null;
+    articleRelations = [];
+    articleSummary = null;
+    await tick();
+    articleEntity = e;
+
+    // Load relations + summary in parallel
+    try {
+      const [rels, summaryRes] = await Promise.all([
+        api('/api/v1/relationships?limit=5000'),
+        api(`/api/v1/entities/${encodeURIComponent(e.id)}/summary`).catch(() => null),
+      ]);
+      const list = Array.isArray(rels) ? rels : rels.relationships ?? [];
+      const id = e.id;
+      articleRelations = list
+        .filter((r) => {
+          const from = r.source_id ?? r.from_entity;
+          const to = r.target_id ?? r.to_entity;
+          return from === id || to === id;
+        })
+        .map((r) => {
+          const from = r.source_id ?? r.from_entity;
+          const to = r.target_id ?? r.to_entity;
+          const relType = r.relation_type ?? r.relationship_type ?? r.type ?? '';
+          return { from, to, relType, outgoing: from === id };
+        });
+      articleSummary = summaryRes?.summary ?? null;
+    } catch {
+      articleRelations = [];
+      articleSummary = null;
+    }
+  }
+
+  function closeArticle() {
+    console.log('[drawer] closeArticle fired', articleEntity?.id, '| before null');
+    try {
+      articleEntity = null;
+      articleRelations = [];
+      articleSummary = null;
+      console.log('[drawer] state after null:', articleEntity);
+    } catch (err) {
+      console.error('[drawer] close failed', err);
+    }
+  }
+
+  // Global ESC key to close drawer
+  function handleGlobalKeydown(e) {
+    if (e.key === 'Escape' && articleEntity) closeArticle();
+  }
+
   async function loadSources() {
     try {
       const s = await api('/api/v1/sources');
@@ -642,7 +883,26 @@
     }
   }
 
+  // Group entities by country (fallback "—" for no-country), then by source inside
+  $: groupedByCountry = (() => {
+    const groups = new Map(); // country -> [entities]
+    for (const e of entities) {
+      const country = e.country ?? e.properties?.country ?? '—';
+      if (!groups.has(country)) groups.set(country, []);
+      groups.get(country).push(e);
+    }
+    // Sort countries alphabetically, "—" last
+    const sorted = [...groups.entries()].sort(([a], [b]) => {
+      if (a === '—') return 1;
+      if (b === '—') return -1;
+      return a.localeCompare(b, 'fr');
+    });
+    return sorted;
+  })();
+
   onMount(async () => {
+    // Bind global ESC to close drawer
+    window.addEventListener('keydown', handleGlobalKeydown);
     try {
       const h = await api('/health');
       health = typeof h === 'string' ? h : h.status ?? 'ok';
@@ -652,6 +912,7 @@
     // Load sources, set smart defaults
     await loadSources();
     search();
+    return () => window.removeEventListener('keydown', handleGlobalKeydown);
   });
 </script>
 
@@ -685,6 +946,9 @@
     </button>
     <button class="secondary focus-btn" on:click={loadFocus} disabled={loading || !query.trim()} title="Cas 10-min : smart search + graphe centré sur l'entité">
       🎯 Vue Focus
+    </button>
+    <button class="secondary" on:click={loadMap} disabled={loading} title="Carte monde choroplèthe par densité d'entités">
+      🗺️ Carte
     </button>
     <button class="secondary" on:click={() => (view = 'list')} disabled={view === 'list'}>
       Vue Liste
@@ -728,25 +992,77 @@
 
   {#if view === 'list'}
     <section class="results">
-      <p class="count">{entities.length} entité{entities.length !== 1 ? 's' : ''}</p>
-      {#each entities as e (e.id)}
-        {@const desc = e.description ?? e.properties?.description}
-        {@const src = e.properties?.source}
-        <article class="card">
-          <div class="card-head">
-            <span class="badge">{typeBadge(e.entity_type ?? e.type)} {e.entity_type ?? e.type ?? 'entité'}</span>
-            <span class="card-meta">
-              {#if src}<span class="src-badge">{src}</span>{/if}
-              {#if e.country ?? e.properties?.country}<span class="country">{e.country ?? e.properties?.country}</span>{/if}
-            </span>
+      <p class="count">{entities.length} entité{entities.length !== 1 ? 's' : ''} · {groupedByCountry.length} pays</p>
+      {#each groupedByCountry as [country, list] (country)}
+        <div class="country-group">
+          <h2 class="country-title">
+            🌍 {country} <span class="country-count">({list.length})</span>
+          </h2>
+          <div class="country-grid">
+            {#each list as e (e.id)}
+              {@const desc = e.description ?? e.properties?.description}
+              {@const src = e.properties?.source}
+              <article class="card clickable" on:click={() => openArticle(e)} role="button" tabindex="0" on:keydown={(ev) => ev.key === 'Enter' && openArticle(e)}>
+                <div class="card-head">
+                  <span class="badge">{typeBadge(e.entity_type ?? e.type)} {e.entity_type ?? e.type ?? 'entité'}</span>
+                  <span class="card-meta">
+                    {#if src}<span class="src-badge">{src}</span>{/if}
+                  </span>
+                </div>
+                <h3>{e.name}</h3>
+                {#if desc}<p>{desc}</p>{/if}
+                <span class="card-action">→ Lire</span>
+              </article>
+            {/each}
           </div>
-          <h3>{e.name}</h3>
-          {#if desc}<p>{desc}</p>{/if}
-        </article>
+        </div>
       {:else}
         {#if !loading}<p class="empty">Aucune entité. Lancez une ingestion via le CLI.</p>{/if}
       {/each}
     </section>
+  {:else if view === 'map'}
+    <div class="map-toolbar">
+      <span class="graph-stats">🗺️ Carte — densité d'entités par pays · cliquer pour voir les détails</span>
+    </div>
+    <div class="map-wrap" bind:this={mapEl}></div>
+
+    {#if mapInfo}
+      <aside class="country-panel">
+        <div class="country-head">
+          <h3>🌍 {mapInfo.name}</h3>
+          <button class="close" on:click={() => (mapInfo = null)} aria-label="Fermer">×</button>
+        </div>
+        <p class="country-meta">
+          {mapInfo.entities.length > 0
+            ? `${mapInfo.entities.length} entité${mapInfo.entities.length > 1 ? 's' : ''} dans la base`
+            : 'Aucune entité dans la base'}
+        </p>
+        {#if mapInfo.entities.length > 0}
+          <ul class="country-list">
+            {#each mapInfo.entities.slice(0, 30) as e (e.id)}
+              <li class="country-item">
+                <span class="badge">{e.type ?? e.entity_type ?? '—'}</span>
+                <span class="country-item-name">{e.name}</span>
+              </li>
+            {/each}
+            {#if mapInfo.entities.length > 30}
+              <li class="country-item dim">… et {mapInfo.entities.length - 30} autres</li>
+            {/if}
+          </ul>
+          <div class="drawer-actions">
+            <button class="secondary small" on:click={() => { query = mapInfo.name; mapInfo = null; view = 'list'; search(); }}>
+              🔎 Rechercher "{mapInfo.name}"
+            </button>
+          </div>
+        {:else}
+          <div class="drawer-actions">
+            <button class="secondary small" on:click={async () => { query = mapInfo.name; ingestOnline = true; mapInfo = null; view = 'list'; await search(); }}>
+              🌐 Lancer une recherche en ligne sur "{mapInfo.name}"
+            </button>
+          </div>
+        {/if}
+      </aside>
+    {/if}
   {:else}
     <div class="graph-toolbar">
       <span class="graph-stats">{nodeCount} nœuds · {edgeCount} arêtes</span>
@@ -756,6 +1072,16 @@
       <button class="secondary small" on:click={() => { hideWeakLinks = !hideWeakLinks; renderGraph(); }} title="Masquer les liens 'related' vers stubs (bruit Wikipedia)">
         {hideWeakLinks ? '🔗 Liens forts' : '🔗 Tous liens'}
       </button>
+      <span class="year-slider" title={`Afficher uniquement les données jusqu'à ${maxYear}`}>
+        <span class="year-label">📅 {maxYear}</span>
+        <input
+          type="range"
+          min={MIN_YEAR}
+          max={new Date().getFullYear()}
+          bind:value={maxYear}
+          on:input={renderGraph}
+        />
+      </span>
       <select bind:value={graphLayout} on:change={renderGraph}>
         <option value="cose">cose</option>
         <option value="breadthfirst">hiérarchie</option>
@@ -807,132 +1133,556 @@
   {/if}
 </main>
 
+<!-- Article drawer: side panel with entity details + relations -->
+{#if articleEntity}
+  {@const drawerKey = articleEntity.id}
+  <div class="drawer-overlay" on:click={closeArticle} on:keydown={(e) => e.key === 'Escape' && closeArticle()} role="presentation" tabindex="-1"></div>
+  <aside class="article-drawer" on:click|stopPropagation role="dialog" aria-modal="true" aria-label="Détail de l'entité" data-id={drawerKey}>
+    <button class="close-drawer" type="button" on:click={(e) => { e.stopPropagation(); console.log('[close] clicked'); closeArticle(); }} aria-label="Fermer">×</button>
+    <div class="drawer-head">
+      <span class="badge">{typeBadge(articleEntity.entity_type ?? articleEntity.type)} {articleEntity.entity_type ?? articleEntity.type ?? 'entité'}</span>
+    </div>
+    <h2 class="drawer-title">{articleEntity.name}</h2>
+
+    {#if articleSummary}
+      <section class="drawer-summary">
+        <h3 class="section-title">📖 Résumé</h3>
+        <p class="summary-text">{articleSummary}</p>
+      </section>
+    {/if}
+
+    {#if articleEntity.description ?? articleEntity.properties?.description}
+      <section class="drawer-section">
+        <h3 class="section-title">Description</h3>
+        <p class="drawer-desc">{articleEntity.description ?? articleEntity.properties?.description}</p>
+      </section>
+    {/if}
+
+    {#if articleEntity.country ?? articleEntity.properties?.country}
+      <div class="drawer-kv"><span class="k">Pays</span><span class="v">{articleEntity.country ?? articleEntity.properties?.country}</span></div>
+    {/if}
+    {#if articleEntity.properties?.source}
+      <div class="drawer-kv"><span class="k">Source</span><span class="v src-badge">{articleEntity.properties.source}</span></div>
+    {/if}
+
+    {#if articleEntity.properties && Object.keys(articleEntity.properties).filter((k) => !['description', 'country', 'source'].includes(k)).length > 0}
+      <section class="drawer-section">
+        <h3 class="section-title">Propriétés</h3>
+        {#each Object.entries(articleEntity.properties).filter(([k]) => !['description', 'country', 'source'].includes(k)) as [k, v]}
+          <div class="drawer-kv">
+            <span class="k">{k}</span>
+            <span class="v">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</span>
+          </div>
+        {/each}
+      </section>
+    {/if}
+
+    {#if articleRelations.length > 0}
+      <section class="drawer-section">
+        <h3 class="section-title">Relations ({articleRelations.length})</h3>
+        <ul class="rel-list">
+          {#each articleRelations as r (r.from + '|' + r.relType + '|' + r.to)}
+            <li class="rel-item">
+              {#if r.outgoing}
+                <span class="rel-dir">→</span> <strong>{r.relType}</strong> <span class="rel-target">{r.to.replace(/^wiki_|^wd_item_|^uncomtrade_country_|^eurostat_country_/, '').replace(/_/g, ' ')}</span>
+              {:else}
+                <span class="rel-dir">←</span> <strong>{r.relType}</strong> <span class="rel-target">{r.from.replace(/^wiki_|^wd_item_|^uncomtrade_country_|^eurostat_country_/, '').replace(/_/g, ' ')}</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+
+    <div class="drawer-actions">
+      <button class="secondary small" on:click={async () => { query = articleEntity.name; const id = articleEntity.id; closeArticle(); view = 'graph'; await loadFocus(true, id); }}>
+        🎯 Ouvrir en Vue Focus
+      </button>
+    </div>
+  </aside>
+{/if}
+
 <style>
+  /* Design tokens */
+  :global(:root) {
+    --bg: #0a0a0f;
+    --surface: rgba(255, 255, 255, 0.07);
+    --surface-hover: rgba(255, 255, 255, 0.12);
+    --border: rgba(255, 255, 255, 0.14);
+    --border-strong: rgba(255, 255, 255, 0.24);
+    --text: rgba(255, 255, 255, 0.95);
+    --text-2: rgba(255, 255, 255, 0.6);
+    --text-3: rgba(255, 255, 255, 0.4);
+    --accent: #2dd4bf;          /* teal — géopolitique sérieux, confiance */
+    --accent-soft: rgba(45, 212, 191, 0.15);
+    --accent-strong: rgba(45, 212, 191, 0.35);
+    --gold: #c9a227;            /* gardé en secondaire pour la marque */
+    --danger: #f87171;
+    --radius-sm: 10px;
+    --radius: 16px;
+    --radius-lg: 20px;
+    --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
   :global(body) {
     margin: 0;
-    background: #0f1115;
-    color: #e8e6e3;
-    font-family: 'Inter', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
   }
-  main { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem; }
-  header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 2rem; }
-  h1 { margin: 0; font-size: 2rem; letter-spacing: -0.02em; }
-  .subtitle { margin: 0.25rem 0 0; color: #a0aec0; font-size: 0.95rem; }
-  .health { font-size: 0.85rem; color: #68d391; padding-top: 0.5rem; }
-  .health.down { color: #fc8181; }
-  .toolbar { display: flex; gap: 0.5rem; margin-bottom: 1.25rem; }
+
+  /* Liquid glass ambient glow — teal light from the top */
+  :global(body)::before {
+    content: '';
+    position: fixed;
+    top: -280px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(1300px, 130vw);
+    height: 700px;
+    background: radial-gradient(
+      ellipse at center,
+      rgba(45, 212, 191, 0.28) 0%,
+      rgba(45, 212, 191, 0.14) 35%,
+      transparent 70%
+    );
+    filter: blur(80px);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Secondary softer glow bottom-right for depth */
+  :global(body)::after {
+    content: '';
+    position: fixed;
+    bottom: -250px;
+    right: -150px;
+    width: 800px;
+    height: 550px;
+    background: radial-gradient(
+      ellipse at center,
+      rgba(45, 212, 191, 0.11) 0%,
+      transparent 60%
+    );
+    filter: blur(100px);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  :global(#app) {
+    position: relative;
+    z-index: 1;
+  }
+
+  main { max-width: 1400px; margin: 0 auto; padding: 2rem 1.5rem; }
+  header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 2.5rem; }
+
+  h1 {
+    margin: 0; font-size: 1.75rem; font-weight: 700;
+    letter-spacing: -0.03em; color: var(--text);
+  }
+  .subtitle { margin: 0.3rem 0 0; color: var(--text-2); font-size: 0.92rem; font-weight: 400; }
+  .health {
+    font-size: 0.8rem; color: var(--accent); padding: 0.4rem 0.9rem;
+    background: var(--accent-soft); border-radius: 999px; border: 1px solid var(--accent-strong);
+  }
+  .health.down { color: var(--danger); background: rgba(248,113,113,0.1); border-color: rgba(248,113,113,0.3); }
+
+  /* Toolbar: glass pill bar */
+  .toolbar {
+    display: flex; gap: 0.5rem; margin-bottom: 1rem;
+    padding: 0.5rem; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius-lg);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  }
   input {
-    flex: 1; padding: 0.7rem 1rem; border-radius: 8px; border: 1px solid #2d3748;
-    background: #1a202c; color: #e8e6e3; font-size: 1rem; outline: none;
+    flex: 1; padding: 0.65rem 1rem; border-radius: 999px;
+    border: 1px solid transparent; background: transparent;
+    color: var(--text); font-size: 0.95rem; outline: none;
+    transition: border-color 200ms var(--ease);
   }
-  input:focus { border-color: #c9a227; }
+  input::placeholder { color: var(--text-3); }
+  input:focus { border-color: var(--accent-strong); }
+
   button {
-    padding: 0.7rem 1.25rem; border-radius: 8px; border: none; cursor: pointer;
-    background: #c9a227; color: #0f1115; font-weight: 600; font-size: 0.95rem;
+    padding: 0.65rem 1.2rem; border-radius: 999px; border: none; cursor: pointer;
+    background: var(--accent); color: var(--bg);
+    font-weight: 600; font-size: 0.9rem;
+    transition: all 200ms var(--ease);
   }
-  button:disabled { opacity: 0.5; cursor: default; }
-  button.secondary { background: #2d3748; color: #e8e6e3; }
-  .error {
-    background: #3d1f1f; border: 1px solid #c53030; color: #feb2b2;
-    padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem;
+  button:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 4px 16px var(--accent-soft); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.secondary {
+    background: var(--surface); color: var(--text);
+    border: 1px solid var(--border);
   }
-  .count { color: #a0aec0; font-size: 0.85rem; margin: 0 0 0.75rem; }
-  .results { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem; }
-  .card {
-    background: #1a202c; border: 1px solid #2d3748; border-radius: 10px; padding: 1rem 1.25rem;
-  }
-  .card:hover { border-color: #c9a22755; }
-  .card-head { display: flex; justify-content: space-between; margin-bottom: 0.5rem; }
-  .badge {
-    font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
-    color: #c9a227; background: #c9a22718; padding: 0.15rem 0.5rem; border-radius: 4px;
-  }
-  .country { font-size: 0.8rem; color: #a0aec0; }
-  .card h3 { margin: 0 0 0.4rem; font-size: 1.05rem; }
-  .card p { margin: 0; color: #a0aec0; font-size: 0.9rem; line-height: 1.45; }
-  .empty { color: #718096; font-style: italic; }
+  button.secondary:hover:not(:disabled) { background: var(--surface-hover); box-shadow: none; }
+  button.small { padding: 0.4rem 0.85rem; font-size: 0.82rem; }
+
   .online-toggle {
-    display: flex; align-items: center; gap: 0.4rem; padding: 0 0.75rem;
-    background: #1a202c; border: 1px solid #2d3748; border-radius: 8px;
-    font-size: 0.9rem; cursor: pointer; white-space: nowrap;
+    display: flex; align-items: center; gap: 0.4rem; padding: 0 0.85rem;
+    background: transparent; border-radius: 999px;
+    font-size: 0.88rem; cursor: pointer; white-space: nowrap; color: var(--text-2);
   }
-  .online-toggle input { accent-color: #c9a227; margin: 0; }
+  .online-toggle input { accent-color: var(--accent); margin: 0; }
   .online-toggle input[type="checkbox"] { width: auto; flex: none; }
+
   select {
-    padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid #2d3748;
-    background: #1a202c; color: #e8e6e3; font-size: 0.95rem; outline: none; cursor: pointer;
+    padding: 0.5rem 0.85rem; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); font-size: 0.85rem; outline: none; cursor: pointer;
   }
-  select:focus { border-color: #c9a227; }
-  .info {
-    background: #1c2a1f; border: 1px solid #2f855a; color: #9ae6b4;
-    padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem;
+  select:focus { border-color: var(--accent-strong); }
+
+  /* Alerts */
+  .error, .info, .warn {
+    padding: 0.75rem 1.1rem; border-radius: var(--radius);
+    margin-bottom: 1rem; font-size: 0.9rem;
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
   }
-  .warn {
-    background: #2d2a1c; border: 1px solid #b7791f; color: #fbd38d;
-    padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem;
-  }
+  .error { background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.25); color: #fca5a5; }
+  .info  { background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.25); color: #86efac; }
+  .warn  { background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.25); color: #fcd34d; }
+
+  /* Source chips */
   .source-chips {
     display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem;
-    margin-bottom: 1rem; padding: 0.4rem 0;
+    margin-bottom: 1rem; padding: 0.25rem 0;
   }
-  .chips-label { color: #a0aec0; font-size: 0.85rem; margin-right: 0.3rem; }
+  .chips-label { color: var(--text-3); font-size: 0.82rem; margin-right: 0.3rem; }
   .chip {
-    padding: 0.35rem 0.75rem; border-radius: 999px; border: 1px solid #2d3748;
-    background: #1a202c; color: #a0aec0; font-size: 0.8rem; cursor: pointer;
-    transition: all 0.15s ease; font-weight: 500;
+    padding: 0.35rem 0.85rem; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--text-2); font-size: 0.8rem; cursor: pointer;
+    transition: all 200ms var(--ease); font-weight: 500;
   }
-  .chip:hover { border-color: #c9a22766; color: #e8e6e3; }
+  .chip:hover { border-color: var(--border-strong); color: var(--text); }
   .chip.active {
-    background: #c9a22722; border-color: #c9a227; color: #c9a227;
+    background: var(--accent-soft); border-color: var(--accent-strong); color: var(--accent);
   }
-  .card-meta { display: flex; gap: 0.5rem; align-items: center; }
+
+  .count { color: var(--text-3); font-size: 0.85rem; margin: 0 0 1rem; }
+
+  /* Country groups */
+  .results { display: flex; flex-direction: column; gap: 2rem; }
+  .country-group { display: flex; flex-direction: column; gap: 0.85rem; }
+  .country-title {
+    margin: 0; font-size: 1.05rem; font-weight: 600; color: var(--text);
+    letter-spacing: -0.02em;
+  }
+  .country-count { color: var(--text-3); font-size: 0.88rem; font-weight: 400; margin-left: 0.3rem; }
+  .country-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.85rem; }
+
+  /* Cards: glass */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.1rem 1.3rem;
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+  }
+  .card.clickable {
+    cursor: pointer;
+    transition: all 200ms var(--ease);
+  }
+  .card.clickable:hover {
+    background: var(--surface-hover);
+    border-color: var(--border-strong);
+    transform: translateY(-2px);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.4), 0 0 24px rgba(45,212,191,0.1);
+  }
+  .card-action {
+    display: inline-block; margin-top: 0.6rem;
+    font-size: 0.8rem; color: var(--accent);
+    opacity: 0; transition: opacity 200ms var(--ease);
+  }
+  .card.clickable:hover .card-action { opacity: 1; }
+  .card-head { display: flex; justify-content: space-between; margin-bottom: 0.55rem; align-items: center; }
+  .card h3 {
+    margin: 0 0 0.4rem; font-size: 1rem; font-weight: 600;
+    letter-spacing: -0.015em; color: var(--text);
+  }
+  .card p { margin: 0; color: var(--text-2); font-size: 0.88rem; line-height: 1.5; }
+  .card-meta { display: flex; gap: 0.4rem; align-items: center; }
+
+  /* Badges */
+  .badge {
+    font-size: 0.7rem; font-weight: 600;
+    color: var(--accent); background: var(--accent-soft);
+    padding: 0.2rem 0.65rem; border-radius: 999px;
+  }
   .src-badge {
-    font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em;
-    color: #a0aec0; background: #2d374855; padding: 0.15rem 0.5rem; border-radius: 4px;
-    border: 1px solid #2d3748;
+    font-size: 0.7rem; color: var(--text-3);
+    background: var(--surface); border: 1px solid var(--border);
+    padding: 0.2rem 0.6rem; border-radius: 999px;
   }
-  .focus-btn {
-    background: #c9a22755; color: #c9a227;
-    border: 1px solid #c9a22744;
-  }
-  .focus-btn:hover:not(:disabled) { background: #c9a227; color: #0f1115; }
-  .focus-btn:disabled { opacity: 0.4; }
+
+  .empty { color: var(--text-3); font-style: italic; }
+
+  /* Focus button */
+  .focus-btn { background: var(--accent-soft); color: var(--accent); border: 1px solid var(--accent-strong); }
+  .focus-btn:hover:not(:disabled) { background: var(--accent); color: var(--bg); }
+  .focus-btn:disabled { opacity: 0.3; }
+
+  /* Graph */
   .graph-wrap {
-    height: 70vh; background: #141822; border: 1px solid #2d3748; border-radius: 10px;
-    flex: 1;
+    height: 70vh;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    flex: 1; min-width: 0;
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 8px 32px rgba(0,0,0,0.3);
   }
   .graph-toolbar {
-    display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem;
-    padding: 0.5rem 0.75rem; background: #1a202c; border: 1px solid #2d3748;
-    border-radius: 8px;
+    display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.75rem;
+    padding: 0.5rem 0.85rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 999px;
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
   }
-  .graph-stats { color: #a0aec0; font-size: 0.85rem; margin-right: auto; }
-  .graph-toolbar select { padding: 0.4rem 0.6rem; font-size: 0.85rem; }
-  button.small { padding: 0.4rem 0.75rem; font-size: 0.85rem; }
-  .graph-container { display: flex; gap: 1rem; align-items: stretch; }
-  .node-panel {
-    width: 320px;
-    min-width: 280px;
-    flex-shrink: 0;
-    background: #1a202c; border: 1px solid #c9a22733;
-    border-radius: 10px; padding: 1rem 1.25rem; overflow-y: auto; max-height: 70vh;
-    /* keep panel readable even on narrow viewports */
+  .map-toolbar {
+    display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.75rem;
+    padding: 0.5rem 0.85rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 999px;
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+  }
+  .map-wrap {
+    height: 75vh;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 8px 32px rgba(0,0,0,0.3);
+    overflow: hidden;
+  }
+  .country-panel {
+    position: fixed;
+    bottom: 1.5rem;
+    left: 1.5rem;
+    width: 360px;
+    max-height: 60vh;
+    overflow-y: auto;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-lg);
+    padding: 1.1rem 1.3rem;
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.5), 0 0 24px rgba(45,212,191,0.1);
+    z-index: 50;
+    animation: slideUp 250ms var(--ease);
+  }
+  @keyframes slideUp {
+    from { transform: translateY(20px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+  .country-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+  .country-head h3 {
+    margin: 0;
+    font-size: 1.2rem;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.015em;
+  }
+  .country-meta {
+    margin: 0 0 0.75rem;
+    color: var(--text-2);
+    font-size: 0.85rem;
+  }
+  .country-list { margin: 0; padding: 0; list-style: none; }
+  .country-item {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .country-item:last-child { border-bottom: none; }
+  .country-item-name {
+    color: var(--text);
+    font-size: 0.92rem;
     word-break: break-word;
+    flex: 1;
+  }
+  .country-item.dim { color: var(--text-3); font-style: italic; }
+  .graph-stats { color: var(--text-3); font-size: 0.82rem; margin-right: auto; }
+  .year-slider {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.25rem 0.6rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+  }
+  .year-label { font-size: 0.8rem; color: var(--text-2); white-space: nowrap; }
+  .year-slider input[type='range'] {
+    -webkit-appearance: none; appearance: none;
+    width: 130px; height: 4px;
+    background: var(--border-strong); border-radius: 2px;
+    outline: none; cursor: pointer;
+    accent-color: var(--accent);
+    padding: 0; border-radius: 2px;
+  }
+  .year-slider input[type='range']::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 14px; height: 14px;
+    border-radius: 50%; background: var(--accent);
+    border: 2px solid var(--bg); cursor: pointer;
+  }
+  .year-slider input[type='range']::-moz-range-thumb {
+    width: 14px; height: 14px;
+    border-radius: 50%; background: var(--accent);
+    border: 2px solid var(--bg); cursor: pointer;
+  }
+  .graph-container {
+    display: flex; gap: 1rem; align-items: stretch;
+    width: 100%; max-width: 100%; overflow: hidden;
+  }
+
+  /* Node panel */
+  .node-panel {
+    width: 320px; min-width: 280px; max-width: 320px; flex-shrink: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.1rem 1.25rem; overflow-y: auto; max-height: 70vh;
+    word-break: break-word; overflow-wrap: break-word;
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
   }
   .node-panel .desc { word-break: break-word; }
-  .panel-head { display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem; }
-  .panel-head h3 { margin: 0; font-size: 1.1rem; color: #c9a227; }
-  .close {
-    background: transparent; color: #a0aec0; border: none; font-size: 1.5rem;
-    cursor: pointer; padding: 0; line-height: 1;
+  .panel-head { display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem; gap: 0.5rem; }
+  .panel-head h3 {
+    margin: 0; font-size: 1.1rem; font-weight: 600; color: var(--text);
+    letter-spacing: -0.015em;
+    word-break: break-word; overflow-wrap: break-word;
+    flex: 1; min-width: 0;
   }
-  .close:hover { color: #e8e6e3; }
+  .close {
+    background: var(--surface); color: var(--text-3); border: 1px solid var(--border);
+    font-size: 1.4rem; border-radius: 999px;
+    cursor: pointer; padding: 0.25rem 0.5rem; line-height: 1;
+    transition: all 200ms var(--ease);
+    flex-shrink: 0;
+  }
+  .close:hover { color: var(--text); background: var(--surface-hover); border-color: var(--border-strong); }
   .kv {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 0.4rem 0; border-bottom: 1px solid #2d374833; font-size: 0.85rem;
+    padding: 0.45rem 0; border-bottom: 1px solid var(--border); font-size: 0.85rem;
   }
-  .kv .k { color: #718096; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
-  .kv .v { color: #e8e6e3; }
-  .desc { color: #a0aec0; font-size: 0.9rem; line-height: 1.5; margin-top: 0.75rem; }
+  .kv .k { color: var(--text-3); font-size: 0.78rem; }
+  .kv .v { color: var(--text); }
+  .desc { color: var(--text-2); font-size: 0.88rem; line-height: 1.55; margin-top: 0.75rem; }
   .panel-actions { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+
+  /* Article drawer */
+  .drawer-overlay {
+    position: fixed; inset: 0;
+    background: rgba(5, 5, 10, 0.65);
+    z-index: 90;
+    backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+    animation: fadeIn 200ms var(--ease);
+  }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slideIn { from { transform: translateX(40px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  .article-drawer {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: 480px; max-width: 90vw;
+    background: rgba(18, 20, 28, 0.92);
+    border-left: 1px solid var(--border-strong);
+    padding: 3.5rem 1.75rem 1.6rem;
+    overflow-y: auto; z-index: 100;
+    backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+    box-shadow: -16px 0 48px rgba(0, 0, 0, 0.5), inset 1px 0 0 rgba(255,255,255,0.05);
+    animation: slideIn 200ms var(--ease);
+  }
+  /* Floating close button — always top-right, always clickable */
+  .close-drawer {
+    position: fixed; top: 1.25rem; right: 1.25rem;
+    width: 44px; height: 44px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    color: var(--text);
+    font-size: 1.6rem; line-height: 1;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    transition: all 200ms var(--ease);
+    z-index: 200;
+  }
+  .close-drawer:hover {
+    background: var(--accent);
+    color: var(--bg);
+    transform: scale(1.05);
+  }
+  .drawer-head {
+    display: flex; justify-content: space-between; align-items: start;
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .drawer-title {
+    margin: 0 0 1.1rem; font-size: 1.45rem; font-weight: 700;
+    color: var(--text); letter-spacing: -0.02em;
+    line-height: 1.2; word-break: break-word;
+  }
+  .drawer-section { margin-top: 1.4rem; }
+  .section-title {
+    margin: 0 0 0.55rem; font-size: 0.75rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-3);
+  }
+  .drawer-desc {
+    margin: 0; color: var(--text); line-height: 1.65; font-size: 0.93rem;
+    word-break: break-word;
+  }
+  .drawer-kv {
+    display: flex; justify-content: space-between; align-items: start;
+    padding: 0.45rem 0; border-bottom: 1px solid var(--border);
+    gap: 0.75rem; font-size: 0.87rem;
+  }
+  .drawer-kv .k { color: var(--text-3); text-transform: capitalize; flex-shrink: 0; min-width: 100px; }
+  .drawer-kv .v { color: var(--text); text-align: right; word-break: break-word; }
+  .rel-list { margin: 0; padding: 0; list-style: none; }
+  .rel-item {
+    padding: 0.5rem 0; border-bottom: 1px solid var(--border);
+    font-size: 0.87rem; display: flex; gap: 0.45rem; align-items: baseline;
+  }
+  .rel-dir { color: var(--accent); font-weight: 700; }
+  .rel-target { color: var(--text-2); margin-left: auto; text-align: right; word-break: break-word; }
+  .drawer-actions {
+    margin-top: 1.5rem; padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    display: flex; flex-direction: column; gap: 0.5rem;
+  }
+
+  /* Narrative summary block */
+  .drawer-summary {
+    margin-top: 0.5rem;
+    padding: 0.9rem 1rem;
+    background: var(--accent-soft);
+    border: 1px solid var(--accent-strong);
+    border-radius: var(--radius);
+    border-left: 3px solid var(--accent);
+  }
+  .summary-text {
+    margin: 0;
+    color: var(--text);
+    font-size: 0.92rem;
+    line-height: 1.65;
+    font-style: italic;
+  }
 </style>
