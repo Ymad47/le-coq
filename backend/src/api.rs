@@ -132,7 +132,7 @@ async fn list_entities(
     } else if query.q.is_some() {
         sql.push_str(" AND (name ILIKE $1 OR properties::text ILIKE $1) ORDER BY created_at DESC LIMIT $2");
         let limit = query.limit.unwrap_or(100).min(1000) as i32;
-        
+
         let rows = sqlx::query(&sql)
             .bind(format!("%{}%", &query.q.as_ref().unwrap()))
             .bind(limit)
@@ -142,16 +142,16 @@ async fn list_entities(
                 tracing::error!("DB error: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-            
+
         let entities: Vec<EntityResponse> = rows.iter().map(|row| {
             EntityResponse {
-                id: row.get::<uuid::Uuid, _>("id").to_string(),
+                id: row.get::<String, _>("id"),
                 name: row.get("name"),
                 r#type: row.get("entity_type"),
                 properties: row.get("properties"),
             }
         }).collect();
-        
+
         Ok(Json(entities))
     } else {
         sql.push_str(" ORDER BY created_at DESC LIMIT $1");
@@ -192,40 +192,47 @@ async fn create_entity(
         .unwrap_or_default();
     
     let properties = payload.get("properties").cloned().unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-    
+
     let sources_vec: Vec<String> = payload.get("sources")
         .and_then(|v| v.as_array())
         .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(|s| s.to_string()).collect())
         .unwrap_or_default();
-    
-    let row = sqlx::query(
+
+    // entities.id est TEXT — accepte un id custom ou génère un UUID
+    let id = payload.get("id").and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    sqlx::query(
         r#"
-        INSERT INTO entities (name, entity_type, aliases, properties, sources)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id
+        INSERT INTO entities (id, name, entity_type, aliases, properties, sources)
+        VALUES ($1, $2, $3, $4, $5, $6)
         "#
     )
+    .bind(&id)
     .bind(name)
     .bind(entity_type)
     .bind(&aliases_vec)
     .bind(&properties)
     .bind(&sources_vec)
-    .fetch_one(&state.postgres)
+    .execute(&state.postgres)
     .await
     .map_err(|e| {
         tracing::error!("Database error: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
+        if e.to_string().contains("duplicate key") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     })?;
-    
-    let id: uuid::Uuid = row.get("id");
-    
+
     let entity = EntityResponse {
-        id: id.to_string(),
+        id,
         name: name.to_string(),
         r#type: entity_type.to_string(),
         properties,
     };
-    
+
     Ok(Json(entity))
 }
 
@@ -233,17 +240,16 @@ async fn get_entity(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<String>,
 ) -> Result<Json<EntityResponse>, StatusCode> {
-    let uuid_id = uuid::Uuid::parse_str(&id).map_err(|_| StatusCode::BAD_REQUEST)?;
-    
+    // entities.id est TEXT (ex: wiki_Paris), pas UUID
     let row = sqlx::query("SELECT id, name, entity_type, properties FROM entities WHERE id = $1")
-        .bind(uuid_id)
+        .bind(&id)
         .fetch_optional(&state.postgres)
         .await
         .map_err(|e| {
             tracing::error!("DB error: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    
+
     row.map(|r| {
         Json(EntityResponse {
             id: r.get::<String, _>("id"),
@@ -267,7 +273,7 @@ async fn list_relationships(
     
     let rels: Vec<serde_json::Value> = rows.iter().map(|row| {
         serde_json::json!({
-            "id": row.get::<String, _>("id"),
+            "id": row.get::<uuid::Uuid, _>("id").to_string(),
             "from_entity": row.get::<String, _>("from_entity"),
             "to_entity": row.get::<String, _>("to_entity"),
             "relationship_type": row.get::<String, _>("relationship_type"),
@@ -288,16 +294,14 @@ async fn create_relationship(
     let rel_type = payload.get("relationship_type").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
     let confidence = payload.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0);
     let properties = payload.get("properties").cloned().unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-    
-    let from_entity = uuid::Uuid::parse_str(from_entity_str).map_err(|_| StatusCode::BAD_REQUEST)?;
-    let to_entity = uuid::Uuid::parse_str(to_entity_str).map_err(|_| StatusCode::BAD_REQUEST)?;
-    
+
+    // from_entity / to_entity sont TEXT (référencent entities.id texte)
     let row = sqlx::query(
         "INSERT INTO relationships (from_entity, to_entity, relationship_type, properties, confidence)
          VALUES ($1, $2, $3, $4, $5) RETURNING id"
     )
-    .bind(from_entity)
-    .bind(to_entity)
+    .bind(from_entity_str)
+    .bind(to_entity_str)
     .bind(rel_type)
     .bind(&properties)
     .bind(confidence as f32)
@@ -309,7 +313,7 @@ async fn create_relationship(
     })?;
     
     Ok(Json(serde_json::json!({
-        "id": row.get::<String, _>("id"),
+        "id": row.get::<uuid::Uuid, _>("id").to_string(),
         "from_entity": from_entity_str,
         "to_entity": to_entity_str,
         "relationship_type": rel_type,
