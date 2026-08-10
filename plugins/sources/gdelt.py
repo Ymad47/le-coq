@@ -74,7 +74,7 @@ class GDELTPlugin(DataSourcePlugin):
         """Search GDELT for news events"""
         results = []
         
-        search_query = query.get("q", "")
+        search_query = query.get("q") or query.get("query") or ""
         start_date = query.get("start_date", "-30d")
         end_date = query.get("end_date", "now")
         

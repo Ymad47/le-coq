@@ -43,3 +43,4 @@ graphify-out/
 venv/
 node_modules/
 dist/.lecoq-state/
+frontend/dist/
