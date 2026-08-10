@@ -42,4 +42,4 @@ __pycache__/
 graphify-out/
 venv/
 node_modules/
-dist/
+dist/.lecoq-state/

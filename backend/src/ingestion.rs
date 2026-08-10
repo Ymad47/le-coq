@@ -161,3 +161,85 @@ pub async fn list_sources(
     
     Ok(Json(plugins))
 }
+
+/// Core ingestion logic reusable from other handlers (e.g. smart search).
+/// Fetches from source, upserts entities/relations in DB. Returns count of new items.
+pub async fn ingest_from_source(
+    state: Arc<AppState>,
+    source: &str,
+    query: Value,
+) -> Result<usize, String> {
+    let result = call_plugin_method(source, "fetch", &query)
+        .map_err(|e| format!("Failed to call plugin {}: {}", source, e))?;
+    
+    if !result.success {
+        return Err(result.error.unwrap_or_else(|| "Plugin execution failed".to_string()));
+    }
+    
+    let items = result.data.unwrap_or(Value::Array(vec![]));
+    let Value::Array(items) = items else {
+        return Ok(0);
+    };
+    
+    let mut inserted = 0usize;
+    
+    for item in items {
+        let is_relation = item.get("from_entity").is_some() && item.get("to_entity").is_some();
+        
+        if is_relation {
+            let from = item.get("from_entity").and_then(|v| v.as_str()).unwrap_or("");
+            let to = item.get("to_entity").and_then(|v| v.as_str()).unwrap_or("");
+            let rel_type = item.get("relationship_type").and_then(|v| v.as_str()).unwrap_or("related_to");
+            let confidence = item.get("confidence").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
+            let properties = item.get("properties").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+            let sources: Vec<String> = item.get("sources").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+            
+            let res = sqlx::query(
+                r#"INSERT INTO relationships (from_entity, to_entity, relationship_type, properties, confidence, sources)
+                   VALUES ($1, $2, $3, $4, $5, $6)"#
+            )
+            .bind(from).bind(to).bind(rel_type)
+            .bind(sqlx::types::Json(&properties)).bind(confidence).bind(&sources)
+            .execute(&state.postgres)
+            .await;
+            if res.is_ok() { inserted += 1; }
+            continue;
+        }
+        
+        match serde_json::from_value::<EntityData>(item.clone()) {
+            Ok(entity) => {
+                let insert_sql = r#"
+                    INSERT INTO entities (id, name, entity_type, aliases, properties, sources, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamp, NOW()))
+                    ON CONFLICT (id) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        entity_type = EXCLUDED.entity_type,
+                        aliases = EXCLUDED.aliases,
+                        properties = EXCLUDED.properties,
+                        sources = EXCLUDED.sources,
+                        updated_at = NOW()
+                "#;
+                
+                let created_at = entity.created_at.and_then(|s| s.parse::<chrono::NaiveDateTime>().ok());
+                
+                if sqlx::query(insert_sql)
+                    .bind(&entity.id)
+                    .bind(&entity.name)
+                    .bind(&entity.entity_type)
+                    .bind(&entity.aliases)
+                    .bind(sqlx::types::Json(&entity.properties))
+                    .bind(&entity.sources)
+                    .bind(created_at)
+                    .execute(&state.postgres)
+                    .await
+                    .is_ok()
+                {
+                    inserted += 1;
+                }
+            }
+            Err(e) => tracing::error!("Failed to parse entity: {}", e),
+        }
+    }
+    
+    Ok(inserted)
+}

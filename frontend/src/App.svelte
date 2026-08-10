@@ -10,6 +10,11 @@
   let view = 'list'; // 'list' | 'graph'
   let health = '';
 
+  let ingestOnline = true; // online par défaut — UX souveraine
+  let newItems = 0;
+  let searchErrors = [];
+  let searching = false;
+
   /** @type {HTMLDivElement} */
   let graphEl;
   /** @type {import('cytoscape').Core | null} */
@@ -17,20 +22,55 @@
 
   async function api(path, opts = {}) {
     const resp = await fetch(path, opts);
-    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      throw new Error(`${resp.status} ${resp.statusText}${text ? ' — ' + text.slice(0, 200) : ''}`);
+    }
     return resp.json();
   }
 
   async function search() {
+    if (!query.trim()) {
+      // Pas de query → juste lister DB
+      loading = true;
+      try {
+        const data = await api('/api/v1/entities');
+        entities = Array.isArray(data) ? data : data.entities ?? [];
+        newItems = 0;
+        searchErrors = [];
+      } catch (e) {
+        error = `Chargement échoué : ${e.message}`;
+      }
+      loading = false;
+      return;
+    }
+
     loading = true;
+    searching = true;
     error = '';
+    newItems = 0;
+    searchErrors = [];
+
     try {
-      const data = await api('/api/v1/entities' + (query ? `?q=${encodeURIComponent(query)}` : ''));
-      entities = Array.isArray(data) ? data : data.entities ?? [];
+      const params = new URLSearchParams({ q: query.trim(), online: ingestOnline });
+      const data = await api(`/api/v1/search?${params}`);
+      const results = data.results ?? [];
+      // Normaliser pour l'UI
+      entities = results.map((r) => ({
+        id: r.id,
+        name: r.name,
+        entity_type: r.entity_type,
+        properties: r.properties,
+        description: r.properties?.description ?? null,
+        country: r.properties?.country ?? null,
+      }));
+      newItems = data.new_items ?? 0;
+      searchErrors = data.errors ?? [];
     } catch (e) {
       error = `Recherche échouée : ${e.message}`;
     }
     loading = false;
+    searching = false;
   }
 
   async function loadGraph() {
@@ -146,8 +186,12 @@
       on:keydown={handleKey}
       placeholder="Rechercher entités, organisations, événements…"
     />
+    <label class="online-toggle" title="Inclure Wikipedia + Wikidata (ingestion auto en cache)">
+      <input type="checkbox" bind:checked={ingestOnline} />
+      🌐 Sources externes
+    </label>
     <button on:click={search} disabled={loading}>
-      {loading ? '…' : 'Rechercher'}
+      {loading && searching ? '🌐 Recherche…' : loading ? '…' : 'Rechercher'}
     </button>
     <button class="secondary" on:click={loadGraph} disabled={loading}>
       Vue Graphe
@@ -159,6 +203,14 @@
 
   {#if error}
     <div class="error">{error}</div>
+  {/if}
+
+  {#if searchErrors.length}
+    <div class="warn">⚠️ {searchErrors.join(' · ')}</div>
+  {/if}
+
+  {#if newItems > 0 && !error}
+    <div class="info">🆕 {newItems} élément{newItems !== 1 ? 's' : ''} ingéré{newItems !== 1 ? 's' : ''} depuis les sources externes</div>
   {/if}
 
   {#if view === 'list'}
@@ -227,6 +279,26 @@
   .card h3 { margin: 0 0 0.4rem; font-size: 1.05rem; }
   .card p { margin: 0; color: #a0aec0; font-size: 0.9rem; line-height: 1.45; }
   .empty { color: #718096; font-style: italic; }
+  .online-toggle {
+    display: flex; align-items: center; gap: 0.4rem; padding: 0 0.75rem;
+    background: #1a202c; border: 1px solid #2d3748; border-radius: 8px;
+    font-size: 0.9rem; cursor: pointer; white-space: nowrap;
+  }
+  .online-toggle input { accent-color: #c9a227; margin: 0; }
+  .online-toggle input[type="checkbox"] { width: auto; flex: none; }
+  select {
+    padding: 0.7rem 0.9rem; border-radius: 8px; border: 1px solid #2d3748;
+    background: #1a202c; color: #e8e6e3; font-size: 0.95rem; outline: none; cursor: pointer;
+  }
+  select:focus { border-color: #c9a227; }
+  .info {
+    background: #1c2a1f; border: 1px solid #2f855a; color: #9ae6b4;
+    padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem;
+  }
+  .warn {
+    background: #2d2a1c; border: 1px solid #b7791f; color: #fbd38d;
+    padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem;
+  }
   .graph-wrap {
     height: 70vh; background: #141822; border: 1px solid #2d3748; border-radius: 10px;
   }

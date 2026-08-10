@@ -1,52 +1,54 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const lib = @import("lib.zig");
 
-// Le Coq CLI - Debug & Intelligence Tool
-// Static binary, memory-safe, sovereign
-//
-// MODE DEBUG: Query backend API, inspect plugins, debug graph
+// Le Coq CLI - System Doctor
+// Diagnostic & troubleshooting for the Le Coq platform
+// Not an end-user query tool — use the frontend for that.
 
-// Helper: check if arg matches long or short form
-fn isCmd(arg: []const u8, long_name: []const u8, short_name: []const u8) bool {
-    // Check exact matches first
-    if (std.mem.eql(u8, arg, long_name) or std.mem.eql(u8, arg, short_name)) return true;
-    // Check --long form
-    if (arg.len > 2 and arg[0] == '-' and arg[1] == '-') {
-        if (std.mem.eql(u8, arg[2..], long_name)) return true;
-    }
-    // Check -s form
-    if (arg.len == 2 and arg[0] == '-') {
-        if (std.mem.eql(u8, arg[1..], short_name)) return true;
-    }
-    return false;
-}
+const ALLOC = std.heap.page_allocator;
+
+const Status = enum { ok, warn, fail };
+
+const CheckResult = struct {
+    name: []const u8,
+    status: Status,
+    detail: []const u8,
+};
 
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     const stderr = std.io.getStdErr().writer();
-    const args = try std.process.argsAlloc(std.heap.page_allocator);
-    defer std.process.argsFree(std.heap.page_allocator, args);
+    const args = try std.process.argsAlloc(ALLOC);
+    defer std.process.argsFree(ALLOC, args);
 
+    // No args → doctor (default)
     if (args.len < 2) {
-        try showHelp(stdout);
+        try doctorCommand(stdout, null);
         return;
     }
 
     const command = args[1];
 
-    if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "-h") or std.mem.eql(u8, command, "--help")) {
+    if (eql(command, "help") or eql(command, "-h") or eql(command, "--help")) {
         try showHelp(stdout);
-    } else if (isCmd(command, "query", "q")) {
-        try queryCommand(stdout, stderr, args[2..]);
-    } else if (isCmd(command, "plugins", "p")) {
-        try pluginsCommand(stdout, stderr, args[2..]);
-    } else if (isCmd(command, "graph", "g")) {
-        try graphCommand(stdout, stderr, args[2..]);
-    } else if (isCmd(command, "api", "a")) {
-        try apiCommand(stdout, stderr, args[2..]);
-    } else if (isCmd(command, "health", "h")) {
+    } else if (eql(command, "doctor") or eql(command, "d")) {
+        const filter: ?[]const u8 = if (args.len >= 3) args[2] else null;
+        try doctorCommand(stdout, filter);
+    } else if (eql(command, "health") or eql(command, "h")) {
         try healthCommand(stdout);
+    } else if (eql(command, "logs")) {
+        const n: []const u8 = if (args.len >= 3) args[2] else "50";
+        try logsCommand(stdout, stderr, n);
+    } else if (eql(command, "stats") or eql(command, "s")) {
+        try statsCommand(stdout);
+    } else if (eql(command, "snapshot")) {
+        try snapshotCommand(stdout, stderr);
+    } else if (eql(command, "diff")) {
+        if (args.len < 3) {
+            try stderr.print("Usage: le-coq diff <snapshot.snap>\n", .{});
+            std.process.exit(1);
+        }
+        try diffCommand(stdout, stderr, args[2]);
     } else {
         try stderr.print("❌ Unknown command: {s}\n\n", .{command});
         try showHelp(stdout);
@@ -54,57 +56,42 @@ pub fn main() !void {
     }
 }
 
+fn eql(a: []const u8, b: []const u8) bool {
+    return std.mem.eql(u8, a, b);
+}
+
 fn showHelp(writer: anytype) !void {
     try printChicken(writer);
-    
     try writer.print(
-        \\Le Coq CLI - Geopolitical Intelligence Tool
-        \\Fabriqué en France 🇫🇷
+        \\Le Coq CLI — System Doctor 🩺
+        \\Diagnostic & troubleshooting for Le Coq.
+        \\Frontend handles search — CLI handles health.
         \\
         \\USAGE:
-        \\  le-coq <COMMAND> [OPTIONS]
+        \\  le-coq [COMMAND] [OPTIONS]
+        \\  le-coq            (no command) → full doctor
         \\
         \\COMMANDS:
-        \\  q[ery] <resource> [OPTIONS]    Query entities, relations, search
-        \\  p[lugins] <subcommand>          List, test, validate plugins
-        \\  g[raph] <subcommand>            Inspect graph (stats, neighbors)
-        \\  a[pi] <method> <endpoint>       Raw API calls (get/post)
-        \\  h[ealth]                        Check backend health
-        \\  help                            Show this help
-        \\
-        \\QUERY RESOURCES:
-        \\  e[ntities]      --type <type> --q <query> --limit <n>
-        \\  r[elations]     --from <id> --to <id> --limit <n>
-        \\  s[earch]        --q <query> --limit <n>
-        \\  src[ources]     (no options)
-        \\
-        \\PLUGIN SUBCOMMANDS:
-        \\  list | l                      List available plugins
-        \\  t[est] <name> --query <q>     Test a plugin
-        \\  v[alidate] <name>             Validate plugin config
-        \\
-        \\GRAPH SUBCOMMANDS:
-        \\  stats                         Graph statistics
-        \\  neighbors --id <entity_id>    Get entity neighbors
-        \\
-        \\API METHODS:
-        \\  get <endpoint>                GET request
-        \\  post <endpoint> --body <json> POST request
+        \\  doctor, d [plugin]        Full diagnostic, or single plugin check
+        \\  health, h                 Quick backend ping
+        \\  stats, s                  DB counters (entities / relations / sources)
+        \\  logs [N]                  Last N journal lines (default 50)
+        \\  snapshot                  Save DB state + git rev → .snap file
+        \\  diff <snap>               Compare current DB vs snapshot
+        \\  help                      This help
         \\
         \\EXAMPLES:
-        \\  le-coq q e --type person -l 10        # entities, limit 10
-        \\  le-coq q r -l 20                      # relations
-        \\  le-coq p list                         # list plugins
-        \\  le-coq p t wikipedia -q "France"      # test plugin
-        \\  le-coq g stats                        # graph stats
-        \\  le-coq a get /api/v1/sources          # API call
-        \\  le-coq h                              # health check
+        \\  le-coq                    # doctor full
+        \\  le-coq doctor wikipedia   # health-check one plugin
+        \\  le-coq logs 200           # last 200 log lines
+        \\  le-coq snapshot           # .lecoq-state/20260810-1930.snap
+        \\  le-coq diff .lecoq-state/20260810-1930.snap
         \\
-        \\GLOBAL OPTIONS:
-        \\  --api-key <key>               API key (or LE_COQ_API_KEY env)
-        \\  --api-url <url>               Backend URL (default: http://localhost:8000)
-        \\  --format <fmt>                Output: json|table|csv (default: table)
-        \\  --verbose, -v                 Verbose output
+        \\ENV:
+        \\  LE_COQ_API_URL      Backend URL (default http://localhost:8000)
+        \\  LE_COQ_API_KEY      API key (if backend auth enabled)
+        \\  LE_COQ_PG_CONN      PostgreSQL conn string (for snapshot)
+        \\                      e.g. "postgresql://postgres@localhost:5432/le_coq"
         \\
         \\Souverain. Transparent. Puissant.
         \\
@@ -127,542 +114,458 @@ fn printChicken(writer: anytype) !void {
     , .{});
 }
 
-// Query command: entities, relations, search, sources
-fn queryCommand(stdout: anytype, stderr: anytype, subargs: [][]const u8) !void {
-    if (subargs.len < 1) {
-        try stderr.print("Usage: le-coq query <entities|relations|search|sources> [OPTIONS]\n", .{});
-        std.process.exit(1);
+// ============================================================================
+// DOCTOR
+// ============================================================================
+
+fn doctorCommand(stdout: anytype, filter: ?[]const u8) !void {
+    try stdout.print("🐓 Le Coq Doctor\n", .{});
+    try stdout.print("────────────────────────────────────────────────\n\n", .{});
+
+    var issues: usize = 0;
+    var warns: usize = 0;
+
+    // 1) Backend health
+    if (filter == null) {
+        const r = checkBackendHealth() catch |e| blk: {
+            break :blk CheckResult{
+                .name = "backend",
+                .status = .fail,
+                .detail = @errorName(e),
+            };
+        };
+        try printCheck(stdout, r);
+        if (r.status == .fail) issues += 1 else if (r.status == .warn) warns += 1;
+
+        // 2) DB stats
+        const db = try checkDbStats();
+        try printCheck(stdout, db);
+        if (db.status == .fail) issues += 1 else if (db.status == .warn) warns += 1;
+
+        try stdout.print("\n", .{});
     }
 
-    const resource = subargs[0];
-    const api_key = getApiKey();
-    const api_url = getApiUrl();
+    // 3) Each plugin (or single one)
+    try stdout.print("🔌 Plugins\n", .{});
 
-    if (isCmd(resource, "entities", "e")) {
-        try queryEntities(stdout, api_url, api_key, subargs[1..]);
-    } else if (isCmd(resource, "relations", "r")) {
-        try queryRelations(stdout, api_url, api_key, subargs[1..]);
-    } else if (isCmd(resource, "search", "s")) {
-        try querySearch(stdout, api_url, api_key, subargs[1..]);
-    } else if (isCmd(resource, "sources", "src")) {
-        try querySources(stdout, api_url, api_key);
-    } else {
-        try stderr.print("Unknown resource: {s}\n", .{resource});
-        std.process.exit(1);
-    }
-}
-
-fn queryEntities(stdout: anytype, api_url: []const u8, api_key: []const u8, args: [][]const u8) !void {
-    // Parse args: --type, --q, --limit, --format
-    var query_params = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer query_params.deinit();
-
-    var format: []const u8 = "table"; // default
-    var limit: []const u8 = "10"; // default
-
-    try query_params.append('?');
-    var first = true;
-
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        if (isCmd(args[i], "type", "t") and i + 1 < args.len) {
-            if (!first) try query_params.append('&');
-            try std.fmt.format(query_params.writer(), "type={s}", .{args[i + 1]});
-            first = false;
-            i += 1;
-        } else if (isCmd(args[i], "q", "q") and i + 1 < args.len) {
-            if (!first) try query_params.append('&');
-            try std.fmt.format(query_params.writer(), "q={s}", .{args[i + 1]});
-            first = false;
-            i += 1;
-        } else if (isCmd(args[i], "limit", "l") and i + 1 < args.len) {
-            limit = args[i + 1];
-            if (!first) try query_params.append('&');
-            try std.fmt.format(query_params.writer(), "limit={s}", .{args[i + 1]});
-            first = false;
-            i += 1;
-        } else if (isCmd(args[i], "format", "f") and i + 1 < args.len) {
-            format = args[i + 1];
-            i += 1;
-        }
-    }
-
-    const endpoint = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/api/v1/entities{s}", .{ api_url, query_params.items });
-    defer std.heap.page_allocator.free(endpoint);
-
-    const response = try makeApiRequestRaw(endpoint, api_key, null);
-    defer std.heap.page_allocator.free(response);
-
-    try formatOutput(stdout, response, format, "entities");
-}
-
-fn queryRelations(stdout: anytype, api_url: []const u8, api_key: []const u8, args: [][]const u8) !void {
-    var query_params = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer query_params.deinit();
-
-    var format: []const u8 = "table"; // default
-
-    try query_params.append('?');
-    var first = true;
-
-    var i: usize = 0;
-    while (i < args.len) : (i += 1) {
-        if (isCmd(args[i], "from", "f") and i + 1 < args.len) {
-            if (!first) try query_params.append('&');
-            try std.fmt.format(query_params.writer(), "from={s}", .{args[i + 1]});
-            first = false;
-            i += 1;
-        } else if (isCmd(args[i], "to", "t") and i + 1 < args.len) {
-            if (!first) try query_params.append('&');
-            try std.fmt.format(query_params.writer(), "to={s}", .{args[i + 1]});
-            first = false;
-            i += 1;
-        } else if (isCmd(args[i], "limit", "l") and i + 1 < args.len) {
-            if (!first) try query_params.append('&');
-            try std.fmt.format(query_params.writer(), "limit={s}", .{args[i + 1]});
-            first = false;
-            i += 1;
-        } else if (isCmd(args[i], "format", "f") and i + 1 < args.len) {
-            format = args[i + 1];
-            i += 1;
-        }
-    }
-
-    const endpoint = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/api/v1/relationships{s}", .{ api_url, query_params.items });
-    defer std.heap.page_allocator.free(endpoint);
-
-    const response = try makeApiRequestRaw(endpoint, api_key, null);
-    defer std.heap.page_allocator.free(response);
-
-    try formatOutput(stdout, response, format, "relations");
-}
-
-fn querySearch(stdout: anytype, api_url: []const u8, api_key: []const u8, args: [][]const u8) !void {
-    const body = try buildSearchBody(args);
-    const endpoint = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/api/v1/search", .{api_url});
-    defer std.heap.page_allocator.free(endpoint);
-
-    try makeApiRequest(stdout, "POST", endpoint, api_key, body);
-}
-
-fn querySources(stdout: anytype, api_url: []const u8, api_key: []const u8) !void {
-    const endpoint = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/api/v1/sources", .{api_url});
-    defer std.heap.page_allocator.free(endpoint);
-
-    const response = try makeApiRequestRaw(endpoint, api_key, null);
-    defer std.heap.page_allocator.free(response);
-
-    // Parse JSON array and print each source
-    const allocator = std.heap.page_allocator;
-    const tmp_path = try std.fmt.allocPrint(allocator, "/tmp/lecoq_sources_{d}.json", .{std.time.timestamp()});
-    defer allocator.free(tmp_path);
-    
-    var file = try std.fs.createFileAbsolute(tmp_path, .{});
-    try file.writeAll(response);
-    file.close();
-    
-    const cmd = try std.fmt.allocPrint(allocator, "jq -r '.[]' '{s}' 2>/dev/null || echo '{s}'", .{ tmp_path, response });
-    defer allocator.free(cmd);
-    
-    const result = std.process.Child.exec(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "sh", "-c", cmd },
-    }) catch {
-        try stdout.print("{s}\n", .{response});
+    const plugins = listPlugins() catch |e| {
+        try stdout.print("   ❌ cannot list plugins: {s}\n", .{@errorName(e)});
+        try summary(stdout, issues + 1, warns);
         return;
     };
-    defer allocator.free(result.stderr);
-    
-    try stdout.print("Active plugins:\n", .{});
-    try stdout.print("{s}\n", .{result.stdout});
-    
-    _ = std.fs.deleteFileAbsolute(tmp_path) catch {};
-}
+    defer freeSlice(plugins);
 
-// Plugins command: list, test, validate
-fn pluginsCommand(stdout: anytype, stderr: anytype, subargs: [][]const u8) !void {
-    if (subargs.len < 1) {
-        try stderr.print("Usage: le-coq plugins <list|test|validate> [OPTIONS]\n", .{});
-        std.process.exit(1);
+    if (plugins.len == 0) {
+        try stdout.print("   (none registered)\n", .{});
     }
 
-    const subcmd = subargs[0];
-    const api_key = getApiKey();
-    const api_url = getApiUrl();
-
-    if (std.mem.eql(u8, subcmd, "list")) {
-        const endpoint = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/api/v1/sources", .{api_url});
-        defer std.heap.page_allocator.free(endpoint);
-        try makeApiRequest(stdout, "GET", endpoint, api_key, null);
-    } else if (isCmd(subcmd, "test", "t")) {
-        if (subargs.len < 2) {
-            try stderr.print("Usage: le-coq plugins test <source> --query <q>\n", .{});
-            std.process.exit(1);
+    for (plugins) |p| {
+        if (filter) |f| {
+            if (!eql(p.name, f)) continue;
         }
-        try pluginsTest(stdout, api_url, api_key, subargs[1..]);
-    } else if (isCmd(subcmd, "validate", "v")) {
-        try pluginsValidate(stdout, api_url, api_key, subargs[1..]);
-    } else {
-        try stderr.print("Unknown subcommand: {s}\n", .{subcmd});
-        std.process.exit(1);
-    }
-}
-
-fn pluginsTest(stdout: anytype, api_url: []const u8, api_key: []const u8, args: [][]const u8) !void {
-    const allocator = std.heap.page_allocator;
-    
-    if (args.len < 1) {
-        try stdout.print("Usage: le-coq plugins test <source> --query <q>\n", .{});
-        return;
-    }
-    
-    const source = args[0];
-    
-    // Parse --query arg
-    var query: ?[]const u8 = null;
-    var i: usize = 1;
-    while (i < args.len) : (i += 1) {
-        if (isCmd(args[i], "query", "q") and i + 1 < args.len) {
-            query = args[i + 1];
-            break;
-        }
-        i += 1;
-    }
-    
-    if (query == null) {
-        try stdout.print("Error: --query required\n", .{});
-        return;
-    }
-    
-    // Call ingestion endpoint: POST /api/v1/ingest with body
-    const endpoint = try std.fmt.allocPrint(allocator, "{s}/api/v1/ingest", .{api_url});
-    defer allocator.free(endpoint);
-    
-    // Build JSON body: {"source": "...", "query": {"q": "..."}}
-    const body = try std.fmt.allocPrint(allocator, "{{\"source\":\"{s}\",\"query\":{{\"q\":\"{s}\"}}}}", .{source, query.?});
-    defer allocator.free(body);
-    
-    try stdout.print("🧪 Testing plugin '{s}' with query: {s}\n\n", .{source, query.?});
-    try makeApiRequest(stdout, "POST", endpoint, api_key, body);
-}
-
-fn pluginsValidate(stdout: anytype, api_url: []const u8, api_key: []const u8, args: [][]const u8) !void {
-    if (args.len < 1) {
-        try stdout.print("Usage: le-coq plugins validate <source>\n", .{});
-        return;
-    }
-    
-    const source = args[0];
-    
-    // Check if source is in the active sources list
-    const sources_url = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/api/v1/sources", .{api_url});
-    defer std.heap.page_allocator.free(sources_url);
-    
-    const sources_resp = try makeApiRequestRaw(sources_url, api_key, null);
-    defer std.heap.page_allocator.free(sources_resp);
-    
-    // Simple check if source name appears in response
-    const found = std.mem.indexOf(u8, sources_resp, source) != null;
-    
-    if (found) {
-        try stdout.print("✅ Plugin '{s}' is active and registered\n", .{source});
-        try stdout.print("   Backend endpoint: POST /api/v1/ingest/{s}\n", .{source});
-    } else {
-        try stdout.print("❌ Plugin '{s}' not found in active sources\n", .{source});
-        try stdout.print("   Available: {s}\n", .{sources_resp});
-    }
-}
-
-// Graph command: stats, neighbors
-fn graphCommand(stdout: anytype, stderr: anytype, subargs: [][]const u8) !void {
-    if (subargs.len < 1) {
-        try stderr.print("Usage: le-coq graph <stats|neighbors> [OPTIONS]\n", .{});
-        std.process.exit(1);
+        const r = try checkPlugin(p.name);
+        try printCheck(stdout, r);
+        if (r.status == .fail) issues += 1 else if (r.status == .warn) warns += 1;
     }
 
-    const subcmd = subargs[0];
-    const api_key = getApiKey();
-    const api_url = getApiUrl();
-
-    if (std.mem.eql(u8, subcmd, "stats")) {
-        try graphStats(stdout, api_url, api_key);
-    } else if (std.mem.eql(u8, subcmd, "neighbors")) {
-        try graphNeighbors(stdout, api_url, api_key, subargs[1..]);
-    } else {
-        try stderr.print("Unknown subcommand: {s}\n", .{subcmd});
-        std.process.exit(1);
-    }
-}
-
-fn graphStats(stdout: anytype, api_url: []const u8, api_key: []const u8) !void {
-    const allocator = std.heap.page_allocator;
-    
-    // Get entity count - use a high limit to get all
-    const entities_url = try std.fmt.allocPrint(allocator, "{s}/api/v1/entities?limit=1000", .{api_url});
-    defer allocator.free(entities_url);
-    
-    const entities_resp = try makeApiRequestRaw(entities_url, api_key, null);
-    defer allocator.free(entities_resp);
-    
-    // Count entities (simple: count "id": occurrences)
-    var entity_count: usize = 0;
-    var pos: usize = 0;
-    while (std.mem.indexOfPos(u8, entities_resp, pos, "\"id\":")) |id_pos| {
-        entity_count += 1;
-        pos = id_pos + 1;
-    }
-    
-    // Get relationship count
-    const relations_url = try std.fmt.allocPrint(allocator, "{s}/api/v1/relationships?limit=1000", .{api_url});
-    defer allocator.free(relations_url);
-    
-    const relations_resp = try makeApiRequestRaw(relations_url, api_key, null);
-    defer allocator.free(relations_resp);
-    
-    var relation_count: usize = 0;
-    if (!std.mem.eql(u8, std.mem.trim(u8, relations_resp, " \n\t"), "[]")) {
-        pos = 0;
-        while (std.mem.indexOfPos(u8, relations_resp, pos, "\"id\":")) |id_pos| {
-            relation_count += 1;
-            pos = id_pos + 1;
-        }
-    }
-    
-    // Get source count
-    const sources_url = try std.fmt.allocPrint(allocator, "{s}/api/v1/sources", .{api_url});
-    defer allocator.free(sources_url);
-    
-    const sources_resp = try makeApiRequestRaw(sources_url, api_key, null);
-    defer allocator.free(sources_resp);
-    
-    var source_count: usize = 0;
-    pos = 0;
-    while (std.mem.indexOfPos(u8, sources_resp, pos, "\"")) |quote_pos| {
-        source_count += 1;
-        pos = quote_pos + 1;
-    }
-    source_count = source_count / 2; // Each source has 2 quotes
-    
-    try stdout.print("\n📊 Graph Statistics\n", .{});
-    try stdout.print("{s}\n", .{"─────────────────────"});
-    try stdout.print("Entities:      {d}\n", .{entity_count});
-    try stdout.print("Relationships: {d}\n", .{relation_count});
-    try stdout.print("Sources:       {d}\n", .{source_count});
     try stdout.print("\n", .{});
+    try summary(stdout, issues, warns);
 }
 
-fn graphNeighbors(stdout: anytype, api_url: []const u8, api_key: []const u8, args: [][]const u8) !void {
-    _ = api_url;
-    _ = api_key;
-    _ = args;
-    
-    // TODO: Implement neighbors query
-    // Need backend endpoint: GET /api/v1/entities/{id}/neighbors
-    try stdout.print("⚠️  graph neighbors not yet implemented\n", .{});
-    try stdout.print("Backend endpoint required: GET /api/v1/entities/<id>/neighbors\n", .{});
+fn summary(stdout: anytype, issues: usize, warns: usize) !void {
+    if (issues == 0 and warns == 0) {
+        try stdout.print("✅ All systems nominal.\n", .{});
+    } else if (issues == 0) {
+        try stdout.print("⚠️  {d} warning{s}. System usable, watch out.\n", .{ warns, plural(warns) });
+    } else {
+        try stdout.print("❌ {d} failure{s}, {d} warning{s}.\n", .{ issues, plural(issues), warns, plural(warns) });
+    }
 }
 
-// API command: get, post
-fn apiCommand(stdout: anytype, stderr: anytype, subargs: [][]const u8) !void {
-    if (subargs.len < 2) {
-        try stderr.print("Usage: le-coq api <get|post> <endpoint> [--body <json>]\n", .{});
-        std.process.exit(1);
+fn plural(n: usize) []const u8 {
+    return if (n > 1) "s" else "";
+}
+
+fn printCheck(stdout: anytype, r: CheckResult) !void {
+    const icon: []const u8 = switch (r.status) {
+        .ok => "   ✅",
+        .warn => "   ⚠️ ",
+        .fail => "   ❌",
+    };
+    try stdout.print("{s} {s:<14} {s}\n", .{ icon, r.name, r.detail });
+}
+
+// ============================================================================
+// CHECKS
+// ============================================================================
+
+const PluginInfo = struct { name: []const u8 };
+
+fn listPlugins() ![]PluginInfo {
+    const url = try std.fmt.allocPrint(ALLOC, "{s}/api/v1/sources", .{apiUrl()});
+    defer ALLOC.free(url);
+
+    const resp = try rawGet(url);
+    defer ALLOC.free(resp);
+
+    // Parse JSON array of strings with std.json
+    const parsed = try std.json.parseFromSlice(std.json.Value, ALLOC, resp, .{});
+    defer parsed.deinit();
+
+    var list = std.ArrayList(PluginInfo).init(ALLOC);
+    if (parsed.value != .array) return list.toOwnedSlice();
+
+    for (parsed.value.array.items) |item| {
+        if (item == .string) {
+            const dup = try ALLOC.dupe(u8, item.string);
+            try list.append(.{ .name = dup });
+        }
+    }
+    return list.toOwnedSlice();
+}
+
+fn freeSlice(slice: []PluginInfo) void {
+    for (slice) |p| ALLOC.free(p.name);
+    ALLOC.free(slice);
+}
+
+fn checkBackendHealth() !CheckResult {
+    const url = try std.fmt.allocPrint(ALLOC, "{s}/health", .{apiUrl()});
+    defer ALLOC.free(url);
+
+    const start = std.time.milliTimestamp();
+    const resp = rawGet(url) catch {
+        return CheckResult{ .name = "backend", .status = .fail, .detail = "unreachable" };
+    };
+    defer ALLOC.free(resp);
+    const elapsed = std.time.milliTimestamp() - start;
+
+    if (resp.len == 0) {
+        return CheckResult{ .name = "backend", .status = .fail, .detail = "empty response" };
     }
 
-    const method = subargs[0];
-    const endpoint = subargs[1];
-    const api_key = getApiKey();
-    const api_url = getApiUrl();
+    const detail = try std.fmt.allocPrint(ALLOC, "up in {d}ms", .{elapsed});
+    return CheckResult{ .name = "backend", .status = .ok, .detail = detail };
+}
 
-    var body: ?[]const u8 = null;
-    var i: usize = 2;
-    while (i < subargs.len) : (i += 1) {
-        if (isCmd(subargs[i], "body", "b") and i + 1 < subargs.len) {
-            body = subargs[i + 1];
-            i += 1;
+fn checkDbStats() !CheckResult {
+    const url = try std.fmt.allocPrint(ALLOC, "{s}/api/v1/entities?limit=1", .{apiUrl()});
+    defer ALLOC.free(url);
+
+    const resp = rawGet(url) catch {
+        return CheckResult{ .name = "database", .status = .fail, .detail = "query failed" };
+    };
+    defer ALLOC.free(resp);
+
+    // Quick total via ?limit=1000 full scan would be heavy; just detect "ok"
+    if (resp.len > 0) {
+        return CheckResult{ .name = "database", .status = .ok, .detail = "reachable" };
+    }
+    return CheckResult{ .name = "database", .status = .warn, .detail = "empty" };
+}
+
+fn checkPlugin(name: []const u8) !CheckResult {
+    // Trigger a minimal real fetch to verify the plugin works end-to-end
+    const url = try std.fmt.allocPrint(ALLOC, "{s}/api/v1/ingest", .{apiUrl()});
+    defer ALLOC.free(url);
+
+    const body = try std.fmt.allocPrint(ALLOC,
+        \\{{"source":"{s}","query":{{"query":"France"}},"rate_limit":1}}
+    , .{name});
+    defer ALLOC.free(body);
+
+    const start = std.time.milliTimestamp();
+    const resp = rawPost(url, body) catch {
+        const dup = try ALLOC.dupe(u8, "call failed");
+        return CheckResult{ .name = name, .status = .fail, .detail = dup };
+    };
+    defer ALLOC.free(resp);
+    const elapsed = std.time.milliTimestamp() - start;
+
+    // Detect failure messages in response
+    if (std.mem.indexOf(u8, resp, "\"success\":false") != null or
+        std.mem.indexOf(u8, resp, "\"success\": false") != null)
+    {
+        // Try to extract error message
+        const msg = extractJsonString(resp, "error") orelse "plugin error";
+        const dup = try ALLOC.dupe(u8, msg);
+        return CheckResult{ .name = name, .status = .fail, .detail = dup };
+    }
+
+    if (std.mem.indexOf(u8, resp, "rate") != null and std.mem.indexOf(u8, resp, "limit") != null) {
+        return CheckResult{ .name = name, .status = .warn, .detail = "rate-limited" };
+    }
+
+    const status: Status = if (elapsed > 5000) .warn else .ok;
+    const detail = try std.fmt.allocPrint(ALLOC, "{d}ms", .{elapsed});
+    return CheckResult{ .name = name, .status = status, .detail = detail };
+}
+
+fn extractJsonString(haystack: []const u8, key: []const u8) ?[]const u8 {
+    const pat = std.fmt.allocPrint(ALLOC, "\"{s}\":\"", .{key}) catch return null;
+    defer ALLOC.free(pat);
+    const start = std.mem.indexOf(u8, haystack, pat) orelse return null;
+    const val_start = start + pat.len;
+    const end = std.mem.indexOfPos(u8, haystack, val_start, "\"") orelse return null;
+    return haystack[val_start..end];
+}
+
+// ============================================================================
+// HEALTH / STATS / LOGS / SNAPSHOT / DIFF
+// ============================================================================
+
+fn healthCommand(stdout: anytype) !void {
+    const url = try std.fmt.allocPrint(ALLOC, "{s}/health", .{apiUrl()});
+    defer ALLOC.free(url);
+    const resp = rawGet(url) catch {
+        try stdout.print("❌ Backend unreachable\n", .{});
+        return;
+    };
+    defer ALLOC.free(resp);
+    try stdout.print("🏥 {s}\n", .{resp});
+}
+
+fn statsCommand(stdout: anytype) !void {
+    try stdout.print("\n📊 Statistics\n─────────────────────\n", .{});
+
+    const e_url = try std.fmt.allocPrint(ALLOC, "{s}/api/v1/entities?limit=1000", .{apiUrl()});
+    defer ALLOC.free(e_url);
+    const e_resp = try rawGet(e_url);
+    defer ALLOC.free(e_resp);
+    const entities = countOccurrences(e_resp, "\"id\":");
+
+    const r_url = try std.fmt.allocPrint(ALLOC, "{s}/api/v1/relationships?limit=1000", .{apiUrl()});
+    defer ALLOC.free(r_url);
+    const r_resp = try rawGet(r_url);
+    defer ALLOC.free(r_resp);
+    const relations = countOccurrences(r_resp, "\"id\":");
+
+    const s_url = try std.fmt.allocPrint(ALLOC, "{s}/api/v1/sources", .{apiUrl()});
+    defer ALLOC.free(s_url);
+    const s_resp = try rawGet(s_url);
+    defer ALLOC.free(s_resp);
+    const quotes = countOccurrences(s_resp, "\"");
+    const sources = quotes / 2;
+
+    try stdout.print("Entities:      {d}\n", .{entities});
+    try stdout.print("Relationships: {d}\n", .{relations});
+    try stdout.print("Sources:       {d}\n\n", .{sources});
+}
+
+fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
+    var count: usize = 0;
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, haystack, pos, needle)) |p| {
+        count += 1;
+        pos = p + 1;
+    }
+    return count;
+}
+
+fn logsCommand(stdout: anytype, stderr: anytype, n: []const u8) !void {
+    _ = stderr;
+    const cmd = try std.fmt.allocPrint(ALLOC,
+        \\journalctl -u le-coq-backend -n {s} --no-pager 2>/dev/null || tail -n {s} /var/log/le-coq.log 2>/dev/null || echo "journalctl unavailable — no logs found"
+    , .{ n, n });
+    defer ALLOC.free(cmd);
+
+    const result = try std.process.Child.exec(.{
+        .allocator = ALLOC,
+        .argv = &[_][]const u8{ "sh", "-c", cmd },
+    });
+    defer ALLOC.free(result.stderr);
+    defer ALLOC.free(result.stdout);
+
+    try stdout.print("{s}", .{result.stdout});
+}
+
+fn snapshotCommand(stdout: anytype, stderr: anytype) !void {
+    // Create .lecoq-state dir if missing
+    const dir_path = ".lecoq-state";
+    std.fs.cwd().makePath(dir_path) catch {};
+
+    // Timestamp
+    const ts = std.time.timestamp();
+    const epoch_secs: u64 = @intCast(ts);
+    const epoch_day = epoch_secs / 86400;
+    const secs_in_day = epoch_secs % 86400;
+
+    // Simple filename (no calendar conversion to keep zig small)
+    const filename = try std.fmt.allocPrint(ALLOC, "{s}/{d}-{d}.snap", .{ dir_path, epoch_day, secs_in_day });
+    defer ALLOC.free(filename);
+
+    // Get entity + relation counts
+    const e_url = try std.fmt.allocPrint(ALLOC, "{s}/api/v1/entities?limit=10000", .{apiUrl()});
+    defer ALLOC.free(e_url);
+    const e_resp = rawGet(e_url) catch {
+        try stderr.print("❌ Cannot fetch entities\n", .{});
+        return;
+    };
+    defer ALLOC.free(e_resp);
+
+    const r_url = try std.fmt.allocPrint(ALLOC, "{s}/api/v1/relationships?limit=10000", .{apiUrl()});
+    defer ALLOC.free(r_url);
+    const r_resp = rawGet(r_url) catch {
+        try stderr.print("❌ Cannot fetch relationships\n", .{});
+        return;
+    };
+    defer ALLOC.free(r_resp);
+
+    // Count IDs per entity (light: collect distinct "id" values)
+    const entity_count = countOccurrences(e_resp, "\"id\":");
+    const relation_count = countOccurrences(r_resp, "\"id\":");
+
+    // Git rev
+    const git_result = std.process.Child.exec(.{
+        .allocator = ALLOC,
+        .argv = &[_][]const u8{ "sh", "-c", "cd /home/yaya/le-coq && git rev-parse --short HEAD 2>/dev/null || echo unknown" },
+    }) catch null;
+    const git_rev: []const u8 = if (git_result) |res| blk: {
+        const trimmed = std.mem.trim(u8, res.stdout, " \n\t");
+        break :blk trimmed;
+    } else "unknown";
+    defer if (git_result) |res| {
+        ALLOC.free(res.stdout);
+        ALLOC.free(res.stderr);
+    };
+
+    var file = try std.fs.cwd().createFile(filename, .{});
+    defer file.close();
+
+    const content = try std.fmt.allocPrint(ALLOC,
+        \\timestamp={d}
+        \\git_rev={s}
+        \\entities={d}
+        \\relations={d}
+        \\
+    , .{ ts, git_rev, entity_count, relation_count });
+    defer ALLOC.free(content);
+
+    try file.writeAll(content);
+    try file.writeAll(e_resp);
+    try file.writeAll("\n---RELATIONS---\n");
+    try file.writeAll(r_resp);
+
+    try stdout.print("📸 Snapshot saved: {s}\n", .{filename});
+    try stdout.print("   entities={d} relations={d} git={s}\n", .{ entity_count, relation_count, git_rev });
+}
+
+fn diffCommand(stdout: anytype, stderr: anytype, snap_path: []const u8) !void {
+    const file = std.fs.cwd().openFile(snap_path, .{}) catch {
+        try stderr.print("❌ Cannot open {s}\n", .{snap_path});
+        return;
+    };
+    defer file.close();
+
+    const content = try file.readToEndAlloc(ALLOC, 50 * 1024 * 1024);
+    defer ALLOC.free(content);
+
+    // Parse header
+    var old_entities: usize = 0;
+    var old_relations: usize = 0;
+    var old_git: []const u8 = "?";
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "entities=")) {
+            old_entities = std.fmt.parseInt(usize, line["entities=".len..], 10) catch 0;
+        } else if (std.mem.startsWith(u8, line, "relations=")) {
+            old_relations = std.fmt.parseInt(usize, line["relations=".len..], 10) catch 0;
+        } else if (std.mem.startsWith(u8, line, "git_rev=")) {
+            old_git = line["git_rev=".len..];
         }
     }
 
-    const full_endpoint = try std.fmt.allocPrint(std.heap.page_allocator, "{s}{s}", .{ api_url, endpoint });
-    defer std.heap.page_allocator.free(full_endpoint);
+    // Current
+    const e_url = try std.fmt.allocPrint(ALLOC, "{s}/api/v1/entities?limit=10000", .{apiUrl()});
+    defer ALLOC.free(e_url);
+    const e_resp = try rawGet(e_url);
+    defer ALLOC.free(e_resp);
+    const cur_entities = countOccurrences(e_resp, "\"id\":");
 
-    try makeApiRequest(stdout, method, full_endpoint, api_key, body);
-}
+    const r_url = try std.fmt.allocPrint(ALLOC, "{s}/api/v1/relationships?limit=10000", .{apiUrl()});
+    defer ALLOC.free(r_url);
+    const r_resp = try rawGet(r_url);
+    defer ALLOC.free(r_resp);
+    const cur_relations = countOccurrences(r_resp, "\"id\":");
 
-// Health command
-fn healthCommand(stdout: anytype) !void {
-    const api_url = getApiUrl();
-    const endpoint = try std.fmt.allocPrint(std.heap.page_allocator, "{s}/health", .{api_url});
-    defer std.heap.page_allocator.free(endpoint);
-
-    try makeApiRequest(stdout, "GET", endpoint, "", null);
-}
-
-// HTTP client - returns raw response
-fn makeApiRequestRaw(url: []const u8, api_key: []const u8, body: ?[]const u8) ![]u8 {
-    const allocator = std.heap.page_allocator;
-
-    // Build curl command
-    var curl_args = std.ArrayList([]const u8).init(allocator);
-    defer curl_args.deinit();
-
-    try curl_args.append("curl");
-    try curl_args.append("-s");
-    try curl_args.append("-H");
-    try curl_args.append(try std.fmt.allocPrint(allocator, "X-API-Key: {s}", .{api_key}));
-
-    if (body) |b| {
-        try curl_args.append("-H");
-        try curl_args.append("Content-Type: application/json");
-        try curl_args.append("-d");
-        try curl_args.append(b);
+    try stdout.print("📊 Diff vs {s}\n", .{snap_path});
+    try stdout.print("─────────────────────\n", .{});
+    try stdout.print("   git rev (snap): {s}\n", .{old_git});
+    try stdout.print("   entities:    {d:>6} → {d:<6}", .{ old_entities, cur_entities });
+    if (cur_entities > old_entities) {
+        try stdout.print("  🆕 +{d}\n", .{cur_entities - old_entities});
+    } else if (cur_entities < old_entities) {
+        try stdout.print("  ➖ -{d}\n", .{old_entities - cur_entities});
+    } else {
+        try stdout.print("\n", .{});
     }
+    try stdout.print("   relations:   {d:>6} → {d:<6}", .{ old_relations, cur_relations });
+    if (cur_relations > old_relations) {
+        try stdout.print("  🆕 +{d}\n", .{cur_relations - old_relations});
+    } else if (cur_relations < old_relations) {
+        try stdout.print("  ➖ -{d}\n", .{old_relations - cur_relations});
+    } else {
+        try stdout.print("\n", .{});
+    }
+}
 
-    try curl_args.append(url);
+// ============================================================================
+// HTTP
+// ============================================================================
 
-    // Execute curl
-    const result = try std.ChildProcess.exec(.{
-        .allocator = allocator,
-        .argv = curl_args.items,
+fn rawGet(url: []const u8) ![]u8 {
+    return rawRequest("GET", url, null);
+}
+
+fn rawPost(url: []const u8, body: []const u8) ![]u8 {
+    return rawRequest("POST", url, body);
+}
+
+fn rawRequest(method: []const u8, url: []const u8, body: ?[]const u8) ![]u8 {
+    var argv = std.ArrayList([]const u8).init(ALLOC);
+    defer argv.deinit();
+
+    try argv.append("curl");
+    try argv.append("-sS");
+    try argv.append("--max-time");
+    try argv.append("15");
+    try argv.append("-X");
+    try argv.append(method);
+
+    const key = apiKey();
+    if (key.len > 0) {
+        const hdr = try std.fmt.allocPrint(ALLOC, "X-API-Key: {s}", .{key});
+        // don't free hdr — used in argv before exec completes leak-safe enough for short-lived CLI
+        try argv.append("-H");
+        try argv.append(hdr);
+    }
+    if (body) |b| {
+        try argv.append("-H");
+        try argv.append("Content-Type: application/json");
+        try argv.append("-d");
+        try argv.append(b);
+    }
+    try argv.append(url);
+
+    const result = try std.process.Child.exec(.{
+        .allocator = ALLOC,
+        .argv = argv.items,
+        .max_output_bytes = 100 * 1024 * 1024,
     });
-    defer allocator.free(result.stderr);
+    defer ALLOC.free(result.stderr);
 
     if (result.term != .Exited or result.term.Exited != 0) {
-        allocator.free(result.stdout);
-        return error.HttpRequestFailed;
+        ALLOC.free(result.stdout);
+        return error.HttpFailed;
     }
-
     return result.stdout;
 }
 
-// HTTP client - prints response
-fn makeApiRequest(stdout: anytype, method: []const u8, url: []const u8, api_key: []const u8, body: ?[]const u8) !void {
-    _ = method;
-    const response = try makeApiRequestRaw(url, api_key, body);
-    defer std.heap.page_allocator.free(response);
-    try stdout.print("{s}\n", .{response});
+fn apiUrl() []const u8 {
+    return std.process.getEnvVarOwned(ALLOC, "LE_COQ_API_URL") catch "http://localhost:8000";
 }
 
-// Format JSON output as table
-fn formatOutput(stdout: anytype, json_response: []const u8, format: []const u8, resource_type: []const u8) !void {
-    const allocator = std.heap.page_allocator;
-    
-    if (std.mem.eql(u8, format, "json")) {
-        // Write to temp file, then jq for pretty print
-        const tmp_path = try std.fmt.allocPrint(allocator, "/tmp/lecoq_{s}_{d}.json", .{ resource_type, std.time.timestamp() });
-        defer allocator.free(tmp_path);
-        
-        // Write JSON to file
-        var file = try std.fs.createFileAbsolute(tmp_path, .{});
-        try file.writeAll(json_response);
-        file.close();
-        
-        // jq the file
-        const jq_cmd = try std.fmt.allocPrint(allocator, "jq '.' '{s}' && rm -f '{s}'", .{ tmp_path, tmp_path });
-        defer allocator.free(jq_cmd);
-        
-        const result = std.process.Child.exec(.{
-            .allocator = allocator,
-            .argv = &[_][]const u8{ "sh", "-c", jq_cmd },
-        }) catch {
-            try stdout.print("{s}\n", .{json_response});
-            return;
-        };
-        defer allocator.free(result.stderr);
-        try stdout.print("{s}", .{result.stdout});
-    } else if (std.mem.eql(u8, format, "table")) {
-        try formatAsTable(stdout, json_response, resource_type);
-    } else if (std.mem.eql(u8, format, "csv")) {
-        try formatAsCsv(stdout, json_response, resource_type);
-    } else {
-        try stdout.print("{s}\n", .{json_response});
-    }
-}
-
-fn formatAsTable(stdout: anytype, json_response: []const u8, resource_type: []const u8) !void {
-    const allocator = std.heap.page_allocator;
-    
-    // Check if empty array
-    if (std.mem.eql(u8, std.mem.trim(u8, json_response, " \n\t"), "[]")) {
-        try stdout.print("No {s} found.\n", .{resource_type});
-        return;
-    }
-    
-    // Write to temp file
-    const tmp_path = try std.fmt.allocPrint(allocator, "/tmp/lecoq_{s}_{d}.json", .{ resource_type, std.time.timestamp() });
-    defer allocator.free(tmp_path);
-    
-    var file = try std.fs.createFileAbsolute(tmp_path, .{});
-    try file.writeAll(json_response);
-    file.close();
-    
-    // Extract fields and format as table with jq + column
-    const table_cmd = switch (resource_type[0]) {
-        'e' => try std.fmt.allocPrint(allocator, "jq -r '.[] | [.id, .name, .type] | @tsv' '{s}' | column -t -s $'\\t' 2>/dev/null || jq -r '.[] | \"\\(.id)\\t\\(.name)\\t\\(.type)\"' '{s}'", .{ tmp_path, tmp_path }),
-        'r' => try std.fmt.allocPrint(allocator, "jq -r '.[] | [.from, .to, .type] | @tsv' '{s}' | column -t -s $'\\t' 2>/dev/null || jq -r '.[] | \"\\(.from)\\t\\(.to)\\t\\(.type)\"' '{s}'", .{ tmp_path, tmp_path }),
-        's' => try std.fmt.allocPrint(allocator, "jq -r '.[] | \"\\(.)\"' '{s}' | column -t 2>/dev/null || cat '{s}'", .{ tmp_path, tmp_path }),
-        else => try std.fmt.allocPrint(allocator, "jq '.' '{s}'", .{tmp_path}),
-    };
-    defer allocator.free(table_cmd);
-    
-    const result = std.process.Child.exec(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "sh", "-c", table_cmd },
-    }) catch {
-        // Fallback: raw JSON
-        try stdout.print("{s}\n", .{json_response});
-        return;
-    };
-    defer allocator.free(result.stderr);
-    try stdout.print("{s}\n", .{result.stdout});
-    
-    // Cleanup
-    _ = std.fs.deleteFileAbsolute(tmp_path) catch {};
-}
-
-fn formatAsCsv(stdout: anytype, json_response: []const u8, resource_type: []const u8) !void {
-    const allocator = std.heap.page_allocator;
-    
-    // Write to temp file
-    const tmp_path = try std.fmt.allocPrint(allocator, "/tmp/lecoq_{s}_{d}.json", .{ resource_type, std.time.timestamp() });
-    defer allocator.free(tmp_path);
-    
-    var file = try std.fs.createFileAbsolute(tmp_path, .{});
-    try file.writeAll(json_response);
-    file.close();
-    
-    // Convert to CSV with jq
-    const csv_cmd = switch (resource_type[0]) {
-        'e' => try std.fmt.allocPrint(allocator, "jq -r '.[] | [.id, .name, .type] | @csv' '{s}'", .{tmp_path}),
-        'r' => try std.fmt.allocPrint(allocator, "jq -r '.[] | [.from, .to, .type] | @csv' '{s}'", .{tmp_path}),
-        else => try std.fmt.allocPrint(allocator, "jq -r '.[] | @csv' '{s}'", .{tmp_path}),
-    };
-    defer allocator.free(csv_cmd);
-    
-    const result = std.process.Child.exec(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "sh", "-c", csv_cmd },
-    }) catch {
-        try stdout.print("{s}\n", .{json_response});
-        return;
-    };
-    defer allocator.free(result.stderr);
-    try stdout.print("{s}\n", .{result.stdout});
-    
-    // Cleanup
-    _ = std.fs.deleteFileAbsolute(tmp_path) catch {};
-}
-
-fn buildSearchBody(args: [][]const u8) ![]const u8 {
-    _ = args;
-    // Build JSON body for search
-    return "{\"query\": \"\"}";
-}
-
-fn getApiKey() []const u8 {
-    return std.process.getEnvVarOwned(std.heap.page_allocator, "LE_COQ_API_KEY") catch "test";
-}
-
-fn getApiUrl() []const u8 {
-    return std.process.getEnvVarOwned(std.heap.page_allocator, "LE_COQ_API_URL") catch "http://localhost:8000";
+fn apiKey() []const u8 {
+    return std.process.getEnvVarOwned(ALLOC, "LE_COQ_API_KEY") catch "";
 }

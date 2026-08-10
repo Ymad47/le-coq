@@ -16,13 +16,15 @@ use crate::ingestion::{ingest_data, list_sources};
 
 use crate::AppState;
 
+use crate::ingestion::ingest_from_source;
+
 pub fn create_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_check))
         .route("/api/v1/entities", get(list_entities).post(create_entity))
         .route("/api/v1/entities/:id", get(get_entity))
         .route("/api/v1/relationships", get(list_relationships).post(create_relationship))
-        .route("/api/v1/search", post(search))
+        .route("/api/v1/search", get(smart_search).post(search))
         .route("/api/v1/ingest", post(ingest_data))
         .route("/api/v1/sources", get(list_sources))
         .layer(middleware::from_fn_with_state(state.clone(), api_key_auth))
@@ -328,21 +330,132 @@ struct SearchRequest {
     filters: Option<serde_json::Value>,
 }
 
+#[derive(Deserialize)]
+struct SmartSearchQuery {
+    q: String,
+    #[serde(default)]
+    online: Option<bool>,
+    #[serde(default)]
+    sources: Option<String>,
+}
+
+/// GET /api/v1/search?q=...&online=true&sources=wikipedia,wikidata
+/// DB-first; if online=true, also hits selected sources and persists results.
+async fn smart_search(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(params): axum::extract::Query<SmartSearchQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let q = params.q.trim().to_string();
+    let online = params.online.unwrap_or(false);
+    let mut source_list: Vec<String> = params
+        .sources
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if online && source_list.is_empty() {
+        source_list = vec!["wikipedia".into(), "wikidata".into()];
+    }
+
+    // 1) Local DB search
+    let sql = "SELECT id, name, entity_type, properties, \
+               ts_rank(to_tsvector('english', name), plainto_tsquery('english', $1)) as rank \
+               FROM entities \
+               WHERE to_tsvector('english', name) @@ plainto_tsquery('english', $1) \
+               ORDER BY rank DESC LIMIT 50";
+
+    let rows = sqlx::query(sql)
+        .bind(&q)
+        .fetch_all(&state.postgres)
+        .await
+        .map_err(|e| {
+            tracing::error!("Smart search DB error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
+        })?;
+
+    let mut results: Vec<serde_json::Value> = rows.iter().map(|row| {
+        serde_json::json!({
+            "id": row.get::<String, _>("id"),
+            "name": row.get::<String, _>("name"),
+            "entity_type": row.get::<String, _>("entity_type"),
+            "properties": row.get::<serde_json::Value, _>("properties"),
+            "origin": "cache",
+            "source": "db",
+        })
+    }).collect();
+
+    let mut new_ingested = 0usize;
+    let mut errors = Vec::new();
+
+    // 2) Online fetch + persist
+    if online {
+        let mut handles = Vec::new();
+        for src in source_list {
+            let state_cl = state.clone();
+            let q_cl = q.clone();
+            handles.push(tokio::spawn(async move {
+                ingest_from_source(state_cl, &src, serde_json::json!({"query": q_cl})).await
+            }));
+        }
+
+        for handle in handles {
+            match handle.await {
+                Ok(Ok(count)) => new_ingested += count,
+                Ok(Err(e)) => errors.push(e),
+                Err(e) => errors.push(format!("task error: {}", e)),
+            }
+        }
+
+        // Refresh from DB after ingestion (dedup handled by ON CONFLICT)
+        if new_ingested > 0 {
+            let rows2 = sqlx::query(sql)
+                .bind(&q)
+                .fetch_all(&state.postgres)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Smart search refresh DB error: {}", e);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "DB refresh error".to_string())
+                })?;
+            results = rows2.iter().map(|row| {
+                serde_json::json!({
+                    "id": row.get::<String, _>("id"),
+                    "name": row.get::<String, _>("name"),
+                    "entity_type": row.get::<String, _>("entity_type"),
+                    "properties": row.get::<serde_json::Value, _>("properties"),
+                    "origin": "cache",
+                    "source": "db",
+                })
+            }).collect();
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "query": q,
+        "online": online,
+        "count": results.len(),
+        "new_items": new_ingested,
+        "errors": errors,
+        "results": results,
+    })))
+}
+
 async fn search(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<SearchRequest>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let q = &payload.query;
-    
+
     // Build the SQL query with optional filters
     let mut sql = "SELECT id, name, entity_type, properties, 
                    ts_rank(to_tsvector('english', name), plainto_tsquery('english', $1)) as rank
          FROM entities 
          WHERE to_tsvector('english', name) @@ plainto_tsquery('english', $1)".to_string();
-    
+
     let mut binds = vec![q.clone()];
     let mut param_index = 2; // $1 is used for the search query
-    
+
     // Add filters if provided
     if let Some(filters) = &payload.filters {
         // Try to parse filters as JSON object
@@ -353,14 +466,14 @@ async fn search(
                 binds.push(entity_type.to_string());
                 param_index += 1;
             }
-            
+
             // Add confidence filter
             if let Some(confidence) = obj.get("confidence").and_then(|v| v.as_f64()) {
                 sql.push_str(&format!(" AND (properties->>'confidence')::float >= ${}", param_index));
                 binds.push(confidence.to_string());
                 param_index += 1;
             }
-            
+
             // Add date range filter
             if let Some(date_range) = obj.get("date_range").and_then(|v| v.as_object()) {
                 if let Some(start) = date_range.get("start").and_then(|v| v.as_str()) {
@@ -376,27 +489,27 @@ async fn search(
                 }
             }
         }
-        
+
         tracing::info!("Filters applied: {:?}", filters);
     }
-    
+
     sql.push_str(" ORDER BY rank DESC LIMIT 50");
-    
+
     // Bind parameters dynamically
     let query = sqlx::query(&sql).bind(binds[0].clone());
     let query = if binds.len() > 1 { query.bind(binds[1].clone()) } else { query };
     let query = if binds.len() > 2 { query.bind(binds[2].clone()) } else { query };
     let query = if binds.len() > 3 { query.bind(binds[3].clone()) } else { query };
     let query = if binds.len() > 4 { query.bind(binds[4].clone()) } else { query };
-    
+
     let rows = query
         .fetch_all(&state.postgres)
         .await
         .map_err(|e| {
             tracing::error!("Search DB error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
         })?;
-    
+
     let results: Vec<serde_json::Value> = rows.iter().map(|row| {
         serde_json::json!({
             "id": row.get::<String, _>("id"),
@@ -406,7 +519,7 @@ async fn search(
             "rank": row.get::<f32, _>("rank"),
         })
     }).collect();
-    
+
     Ok(Json(serde_json::json!({
         "query": q,
         "count": results.len(),
