@@ -254,6 +254,7 @@ impl Poller {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
 
     #[test]
     fn test_extract_timestamp() {

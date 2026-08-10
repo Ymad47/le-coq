@@ -17,24 +17,23 @@
 ## 🔴 High Priority (This Week)
 
 ### 1. Build & Test Backend
-- [ ] Run `cargo build` in backend directory
-- [ ] Fix any compilation errors
-- [ ] Run `cargo test` (if tests exist)
+- [x] Run `cargo build` in backend directory
+- [x] Fix any compilation errors (chrono Datelike import dans poller.rs tests)
+- [x] Run `cargo test` — 33/33 passent (PYO3_PYTHON=python3.11 requis, fixé dans .cargo/config.toml)
 - [ ] Verify docker-compose builds successfully
 
 ### 2. Database Setup
-- [ ] Start PostgreSQL with pgvector: `docker-compose up -d postgres`
-- [ ] Verify pgvector extension: `docker-compose exec postgres psql -U lecoq -c "CREATE EXTENSION IF NOT EXISTS vector;"`
-- [ ] Run migrations: `docker-compose exec backend ls -la /app/migrations`
-- [ ] Test connection: `docker-compose exec backend curl http://localhost:8000/health`
+- [x] PostgreSQL + pgvector running (docker-postgres-1, healthy)
+- [x] pgvector extension active, migrations appliquées (entities, relationships, _sqlx_migrations)
+- [x] Backend health check OK : curl http://localhost:8000/health
 
 ### 3. API Key Configuration
 - [ ] Generate secure API key: `openssl rand -hex 32`
 - [ ] Add to docker-compose.yml environment: `API_KEY_HEADER=X-API-Key`
 - [ ] Document in README.md how to set API keys
-- [ ] Test auth: `curl -H "X-API-Key: your-key" http://localhost:8000/api/v1/entities`
+- [ ] Test auth: `curl -H "X-API-Key: *** http://localhost:8000/api/v1/entities`
 
-### 4. TLS/HTTPS Setup
+### 4. TLS/HTTPS Setup (reporté — dev local only pour l'instant)
 - [ ] Option A: Add nginx reverse proxy (recommended for prod)
   - [ ] Create nginx Dockerfile
   - [ ] Configure SSL certificates (Let's Encrypt)
