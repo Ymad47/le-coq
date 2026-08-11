@@ -1685,4 +1685,125 @@
     line-height: 1.65;
     font-style: italic;
   }
+
+  /* ============ MOBILE (<=820px) ============ */
+  @media (max-width: 820px) {
+    :global(body) { font-size: 14px; }
+    main { padding: 1rem 0.75rem; }
+
+    /* Header: stack title above health pill */
+    header {
+      flex-direction: column;
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
+    }
+    h1 { font-size: 1.4rem; }
+    .subtitle { font-size: 0.85rem; }
+    .health { align-self: flex-start; }
+
+    /* Toolbar: wrap, full-width search */
+    .toolbar {
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      padding: 0.4rem;
+    }
+    .toolbar input { min-width: 0; font-size: 0.9rem; }
+    .toolbar button { padding: 0.6rem 1rem; font-size: 0.85rem; }
+    .toolbar .secondary { padding: 0.6rem 0.9rem; }
+
+    /* Search buttons row: stack vertically on tiny screens */
+    .toolbar > * { flex-shrink: 1; }
+
+    /* Source chips: horizontal scroll instead of wrap */
+    .source-chips {
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+      padding-bottom: 0.35rem;
+    }
+    .source-chips::-webkit-scrollbar { display: none; }
+    .chip { flex-shrink: 0; }
+
+    /* Cards: single column */
+    .country-grid { grid-template-columns: 1fr; }
+    .card { padding: 0.9rem 1rem; }
+    .card h3 { font-size: 0.95rem; }
+    .card p { font-size: 0.83rem; }
+
+    /* Force hover-action visible on touch (no hover) */
+    .card-action { opacity: 1; }
+
+    /* Graph view: full width, panel becomes bottom sheet */
+    .graph-container { flex-direction: column; }
+    .graph-wrap {
+      height: 55vh;
+      min-height: 300px;
+    }
+    .node-panel {
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      max-height: 40vh;
+    }
+
+    /* Graph toolbar: scroll horizontal */
+    .graph-toolbar, .map-toolbar {
+      overflow-x: auto;
+      flex-wrap: nowrap;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+      gap: 0.4rem;
+      padding: 0.4rem 0.6rem;
+    }
+    .graph-toolbar::-webkit-scrollbar, .map-toolbar::-webkit-scrollbar { display: none; }
+    .graph-toolbar button, .map-toolbar button {
+      flex-shrink: 0;
+      padding: 0.45rem 0.75rem;
+      font-size: 0.78rem;
+    }
+    .year-slider { flex-shrink: 0; }
+    .year-slider input[type='range'] { width: 90px; }
+    .year-label { font-size: 0.72rem; }
+
+    /* Map: reduce height, panel becomes full-width bottom sheet */
+    .map-wrap { height: 60vh; min-height: 320px; }
+    .country-panel {
+      left: 0.5rem;
+      right: 0.5rem;
+      bottom: 0.5rem;
+      width: auto;
+      max-height: 45vh;
+    }
+
+    /* Article drawer: full-width on mobile */
+    .article-drawer {
+      width: 100%;
+      max-width: 100%;
+      padding: 3.5rem 1rem 1.2rem;
+    }
+    .close-drawer {
+      top: 0.85rem;
+      right: 0.85rem;
+      width: 40px;
+      height: 40px;
+      font-size: 1.4rem;
+    }
+    .drawer-title { font-size: 1.2rem; }
+    .drawer-kv { flex-direction: column; gap: 0.15rem; }
+    .drawer-kv .v { text-align: left; }
+
+    /* Reduce ambient glow cost on small devices */
+    :global(body)::before { filter: blur(60px); opacity: 0.7; }
+    :global(body)::after { display: none; }
+  }
+
+  /* Ultra-small (<=400px): even tighter */
+  @media (max-width: 400px) {
+    h1 { font-size: 1.2rem; }
+    .toolbar input { font-size: 0.85rem; }
+    .toolbar button { font-size: 0.8rem; padding: 0.55rem 0.8rem; }
+    .graph-wrap { height: 50vh; }
+    .map-wrap { height: 55vh; }
+  }
 </style>
