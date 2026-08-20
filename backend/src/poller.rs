@@ -1,7 +1,6 @@
 //! Le-Chasseur JSON poller
 //! Scans output/ directory for new JSON files and ingests them into PostgreSQL
 
-use crate::db::postgres::create_pool;
 use anyhow::{Context, Result};
 use chrono::DateTime;
 use serde::Deserialize;
@@ -43,8 +42,7 @@ pub struct PollerConfig {
 
 impl PollerConfig {
     pub fn from_env() -> Result<Self> {
-        let le_chasseur_output_dir = std::env::var("LE_CHASSEUR_OUTPUT_DIR")
-            .unwrap_or_else(|_| "/home/yaya/le-chasseur/output".to_string());
+        let le_chasseur_output_dir = crate::config::le_chasseur_output_dir();
         let poll_interval_secs = std::env::var("POLL_INTERVAL_SECS")
             .unwrap_or_else(|_| "300".to_string())
             .parse::<u64>()
@@ -53,7 +51,7 @@ impl PollerConfig {
             .context("DATABASE_URL not set")?;
 
         Ok(Self {
-            le_chasseur_output_dir: PathBuf::from(le_chasseur_output_dir),
+            le_chasseur_output_dir,
             poll_interval_secs,
             database_url,
         })
@@ -62,14 +60,16 @@ impl PollerConfig {
 
 pub struct Poller {
     config: PollerConfig,
+    pool: sqlx::PgPool,
     last_processed_time: Option<DateTime<chrono::Utc>>,
     processed_files: std::collections::HashSet<String>,
 }
 
 impl Poller {
-    pub fn new(config: PollerConfig) -> Self {
+    pub fn new(config: PollerConfig, pool: sqlx::PgPool) -> Self {
         Self {
             config,
+            pool,
             last_processed_time: None,
             processed_files: std::collections::HashSet::new(),
         }
@@ -201,42 +201,31 @@ impl Poller {
             return Ok(0);
         }
 
-        // Create DB pool
-        let pool = create_pool(&self.config.database_url).await?;
+        // Reuse pool passed from main (no new pool per file!)
+        let pool = self.pool.clone();
 
         let mut ingested = 0;
 
         for entity in output.entities {
-            let insert_sql = r#"
-                INSERT INTO entities (id, name, entity_type, aliases, properties, sources, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamp, NOW()))
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
-                    entity_type = EXCLUDED.entity_type,
-                    aliases = EXCLUDED.aliases,
-                    properties = EXCLUDED.properties,
-                    sources = EXCLUDED.sources,
-                    updated_at = NOW()
-            "#;
-
             let properties = entity.properties.unwrap_or(Value::Object(serde_json::Map::new()));
             let sources = vec![output.source.clone()];
-            
+
             // Parse created_at timestamp
             let created_at = DateTime::parse_from_rfc3339(&output.collected_at)
                 .ok()
                 .map(|dt| dt.naive_utc());
 
-            match sqlx::query(insert_sql)
-                .bind(&entity.id)
-                .bind(&entity.name)
-                .bind(&entity.entity_type)
-                .bind(&entity.aliases)
-                .bind(sqlx::types::Json(&properties))
-                .bind(&sources)
-                .bind(created_at)
-                .execute(&pool)
-                .await
+            match crate::db::entities::upsert(
+                &pool,
+                &entity.id,
+                &entity.name,
+                &entity.entity_type,
+                &entity.aliases,
+                &properties,
+                &sources,
+                created_at,
+            )
+            .await
             {
                 Ok(_) => {
                     ingested += 1;
@@ -258,11 +247,23 @@ mod tests {
 
     #[test]
     fn test_extract_timestamp() {
-        let poller = Poller::new(PollerConfig {
-            le_chasseur_output_dir: PathBuf::from("/tmp"),
-            poll_interval_secs: 300,
-            database_url: "postgres://test".to_string(),
+        // Need a fake pool — extract_timestamp doesn't touch DB
+        // Use lazy connect string that won't actually connect
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool = rt.block_on(async {
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy("postgres://invalid")
+                .expect("lazy connect should not fail")
         });
+        let poller = Poller::new(
+            PollerConfig {
+                le_chasseur_output_dir: PathBuf::from("/tmp"),
+                poll_interval_secs: 300,
+                database_url: "postgres://test".to_string(),
+            },
+            pool,
+        );
 
         let result = poller.extract_timestamp("20260804_145125_wikipedia.json");
         assert!(result.is_some());

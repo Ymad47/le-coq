@@ -1,5 +1,6 @@
 //! Data ingestion pipelines
 
+use crate::db;
 use crate::plugin_bridge::{call_plugin_method, list_plugins};
 use crate::AppState;
 use axum::{extract::State, http::StatusCode, Json};
@@ -81,32 +82,29 @@ pub async fn ingest_data(
                     let properties = item.get("properties").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
                     let sources: Vec<String> = item.get("sources").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
 
-                    // Stub endpoints to satisfy FK (same logic as ingest_from_source)
+                    // Stub endpoints to satisfy FK (insert_stub via db module)
                     for endpoint in [from, to] {
                         if endpoint.is_empty() { continue; }
-                        let _ = sqlx::query(
-                            r#"INSERT INTO entities (id, name, entity_type, properties, sources, created_at)
-                               VALUES ($1, $2, 'stub', $3, $4, NOW())
-                               ON CONFLICT (id) DO NOTHING"#
-                        )
-                        .bind(endpoint)
-                        .bind(stub_name_from_id(endpoint))
-                        .bind(sqlx::types::Json(serde_json::json!({"stub": true})))
-                        .bind(&sources)
-                        .execute(&state.postgres)
-                        .await;
+                        let _ = db::entities::insert_stub(
+                            &state.postgres,
+                            endpoint,
+                            &stub_name_from_id(endpoint),
+                            &sources,
+                        ).await;
                     }
 
-                    let res = sqlx::query(
-                        r#"INSERT INTO relationships (from_entity, to_entity, relationship_type, properties, confidence, sources)
-                           VALUES ($1, $2, $3, $4, $5, $6)"#
-                    )
-                    .bind(from).bind(to).bind(rel_type)
-                    .bind(sqlx::types::Json(&properties)).bind(confidence).bind(&sources)
-                    .execute(&state.postgres)
-                    .await;
-                    match res {
-                        Ok(_) => tracing::info!("Relation: {} -[{}]-> {}", from, rel_type, to),
+                    let rel = db::relationships::insert(
+                        &state.postgres,
+                        from,
+                        to,
+                        rel_type,
+                        &properties,
+                        Some(confidence),
+                        &sources,
+                    ).await;
+                    match rel {
+                        Ok((_id, true)) => tracing::info!("Relation: {} -[{}]-> {}", from, rel_type, to),
+                        Ok((_id, false)) => tracing::debug!("Relation exists, skipped: {} -[{}]-> {}", from, rel_type, to),
                         Err(e) => tracing::error!("Failed to insert relation {}->{}: {}", from, to, e),
                     }
                     continue;
@@ -115,32 +113,19 @@ pub async fn ingest_data(
                 match serde_json::from_value::<EntityData>(item.clone()) {
                     Ok(entity) => {
                         tracing::info!("Inserting entity: {} ({})", entity.id, entity.name);
-                        
-                        let insert_sql = r#"
-                            INSERT INTO entities (id, name, entity_type, aliases, properties, sources, created_at)
-                            VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamp, NOW()))
-                            ON CONFLICT (id) DO UPDATE SET
-                                name = EXCLUDED.name,
-                                entity_type = EXCLUDED.entity_type,
-                                aliases = EXCLUDED.aliases,
-                                properties = EXCLUDED.properties,
-                                sources = EXCLUDED.sources,
-                                updated_at = NOW()
-                        "#;
-                        
+
                         let created_at = entity.created_at.and_then(|s| s.parse::<chrono::NaiveDateTime>().ok());
-                        
-                        match sqlx::query(insert_sql)
-                            .bind(&entity.id)
-                            .bind(&entity.name)
-                            .bind(&entity.entity_type)
-                            .bind(&entity.aliases)
-                            .bind(sqlx::types::Json(&entity.properties))
-                            .bind(&entity.sources)
-                            .bind(created_at)
-                            .execute(&state.postgres)
-                            .await
-                        {
+
+                        match db::entities::upsert(
+                            &state.postgres,
+                            &entity.id,
+                            &entity.name,
+                            &entity.entity_type,
+                            &entity.aliases,
+                            &entity.properties,
+                            &entity.sources,
+                            created_at,
+                        ).await {
                             Ok(_) => tracing::info!("Successfully inserted {}", entity.id),
                             Err(e) => tracing::error!("Failed to insert {}: {}", entity.id, e),
                         }
@@ -213,33 +198,27 @@ pub async fn ingest_from_source(
             let sources: Vec<String> = item.get("sources").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
 
             // Ensure endpoint entities exist (FK constraint on relationships).
-            // Create minimal stubs for referenced-but-not-yet-ingested entities.
             for endpoint in [from, to] {
                 if endpoint.is_empty() { continue; }
                 let name = stub_name_from_id(endpoint);
-                let _ = sqlx::query(
-                    r#"INSERT INTO entities (id, name, entity_type, properties, sources, created_at)
-                       VALUES ($1, $2, 'stub', $3, $4, NOW())
-                       ON CONFLICT (id) DO NOTHING"#
-                )
-                .bind(endpoint)
-                .bind(&name)
-                .bind(sqlx::types::Json(serde_json::json!({"stub": true})))
-                .bind(&sources)
-                .execute(&state.postgres)
-                .await; // ignore errors: next INSERT will surface them if critical
+                let _ = db::entities::insert_stub(&state.postgres, endpoint, &name, &sources).await;
             }
 
-            let res = sqlx::query(
-                r#"INSERT INTO relationships (from_entity, to_entity, relationship_type, properties, confidence, sources)
-                   VALUES ($1, $2, $3, $4, $5, $6)"#
-            )
-            .bind(from).bind(to).bind(rel_type)
-            .bind(sqlx::types::Json(&properties)).bind(confidence).bind(&sources)
-            .execute(&state.postgres)
-            .await;
-            match res {
-                Ok(_) => inserted += 1,
+            let rel = db::relationships::insert(
+                &state.postgres,
+                from,
+                to,
+                rel_type,
+                &properties,
+                Some(confidence),
+                &sources,
+            ).await;
+            match rel {
+                Ok((_id, inserted_flag)) => {
+                    if inserted_flag {
+                        inserted += 1;
+                    }
+                }
                 Err(e) => {
                     let msg = format!("relation {} -> {}: {}", from, to, e);
                     tracing::warn!("ingest relation dropped: {}", msg);
@@ -248,34 +227,23 @@ pub async fn ingest_from_source(
             }
             continue;
         }
-        
+
         match serde_json::from_value::<EntityData>(item.clone()) {
             Ok(entity) => {
-                let insert_sql = r#"
-                    INSERT INTO entities (id, name, entity_type, aliases, properties, sources, created_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamp, NOW()))
-                    ON CONFLICT (id) DO UPDATE SET
-                        name = EXCLUDED.name,
-                        entity_type = EXCLUDED.entity_type,
-                        aliases = EXCLUDED.aliases,
-                        properties = EXCLUDED.properties,
-                        sources = EXCLUDED.sources,
-                        updated_at = NOW()
-                "#;
-                
                 let created_at = entity.created_at.and_then(|s| s.parse::<chrono::NaiveDateTime>().ok());
-                
-                if sqlx::query(insert_sql)
-                    .bind(&entity.id)
-                    .bind(&entity.name)
-                    .bind(&entity.entity_type)
-                    .bind(&entity.aliases)
-                    .bind(sqlx::types::Json(&entity.properties))
-                    .bind(&entity.sources)
-                    .bind(created_at)
-                    .execute(&state.postgres)
-                    .await
-                    .is_ok()
+
+                if db::entities::upsert(
+                    &state.postgres,
+                    &entity.id,
+                    &entity.name,
+                    &entity.entity_type,
+                    &entity.aliases,
+                    &entity.properties,
+                    &entity.sources,
+                    created_at,
+                )
+                .await
+                .is_ok()
                 {
                     inserted += 1;
                 }

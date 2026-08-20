@@ -1,338 +1,584 @@
-# Le Coq — Vision Document
+# Le Coq — Vision Produit
 
-**Geopolitical Intelligence Platform — Open-source alternative to Palantir**
+> **Build a microscope, not an oracle.**
 
-> Fabriqué en France 🇫🇷  
-> Souverain. Transparent. Puissant. Complet.
-
----
-
-## Mission
-
-> "People see the truth information"
-
-Build the world's most complete open-source intelligence platform — combining **all data sources** (clear, deep, dark web) with **sovereign European infrastructure** and **deep knowledge graph analysis**.
+Une plateforme OSINT géopolitique qui aide les analystes à investiguer des événements complexes — sans prétendre dire "la vérité".
 
 ---
 
-## Core Philosophy
+## 1. Le Problème
 
-| Principle | Stance |
-|-----------|--------|
-| **Data Sources** | ✅ All sources worldwide — US, EU, CN, RU, whatever works |
-| **Platform Control** | ✅ Sovereign — EU hosting, AGPL, user control |
-| **Infrastructure** | ✅ Independent — Hetzner/OVH/Scaleway, not AWS/Vercel |
-| **License** | ✅ AGPL — can never be acquired and closed |
-| **Dark Web** | ✅ Read-only integration — Tor, .onion, markets, forums |
+Quand un événement géopolitique arrive, 5 médias = 5 récits différents.
 
-> **"Take the best data. Keep sovereign control."**
+L'analyste doit reconstruire manuellement :
+- Quoi ? Quand ? Où ? Qui ?
+- Quelles sources s'accordent / se contredisent ?
+- Qu'est-ce qu'on savait à 10h00 vs 15h00 ?
+- Quelles preuves pour chaque affirmation ?
+
+**Le Coq = un microscope.** Pas un oracle. On montre les preuves, pas les conclusions.
 
 ---
 
-## Complete Intelligence Layers
+## 2. Architecture Principale
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│              LE COQ — FULL INTELLIGENCE                 │
-├─────────────────────────────────────────────────────────┤
-│  1. CLEAR WEB                                           │
-│  • News, corporate, gov, academic                       │
-│  • Social media, public databases                       │
-│  • Live feeds (flights, ships, CCTV, seismic)           │
-├─────────────────────────────────────────────────────────┤
-│  2. DEEP WEB                                            │
-│  • Academic journals (paywalled)                        │
-│  • Corporate registries, court records                  │
-│  • Satellite imagery, maritime data                     │
-│  • Professional databases                               │
-├─────────────────────────────────────────────────────────┤
-│  3. DARK WEB                                            │
-│  • Tor .onion sites (forums, leaks, markets)            │
-│  • Darknet paste monitors (creds, docs)                 │
-│  • Encrypted channels (Telegram, IRC)                   │
-│  • Marketplace listings (read-only)                     │
-├─────────────────────────────────────────────────────────┤
-│  4. KNOWLEDGE GRAPH                                     │
-│  • Entity relationships (Neo4j)                         │
-│  • Network analysis (centrality, communities)           │
-│  • Historical pattern detection                         │
-│  • Inference engine (hidden connections)                │
-├─────────────────────────────────────────────────────────┤
-│  5. SOVEREIGN INFRA                                     │
-│  • EU hosting (Hetzner, OVH, Scaleway)                  │
-│  • AGPL license (stays open forever)                    │
-│  • Offline mode (Zig CLI + local cache)                 │
-│  • Full user control                                    │
-└─────────────────────────────────────────────────────────┘
+Sources Publiques → Ingestion → Normalisation → Entités/Événements
+                                              ↓
+                                    Relations → Timeline / Carte / Graphe
+                                              ↓
+                                         Preuves → Analyste Humain
 ```
 
----
-
-## Data Sources (Worldwide — Best Available)
-
-### Clear Web
-
-| Domain | Source | Country | Status |
-|--------|--------|---------|--------|
-| **Flights** | OpenSky Network | 🇨🇭 Switzerland | ✅ |
-| **Maritime** | AIS streams | 🇮🇳 India | ✅ |
-| **Earthquakes** | USGS | 🇺🇸 USA | ✅ |
-| **Fires** | NASA FIRMS | 🇺🇸 USA | ✅ |
-| **Weather** | NOAA + EUMETSAT | 🇺🇸 + 🇪🇺 | ✅ |
-| **Satellites** | N2YO + ESA | 🇺🇸 + 🇪🇺 | ✅ |
-| **Conflict** | ACLED | 🇬🇧 UK | ✅ |
-| **Corporate** | OpenCorporates | 🇬🇧 UK | ✅ |
-| **News** | GDelt + RSS feeds | 🇺🇸 + Worldwide | ✅ |
-| **Sanctions** | OFAC + EU Consolidated | 🇺🇸 + 🇪🇺 | ✅ |
-
-### Deep Web
-
-| Domain | Source | Access |
-|--------|--------|--------|
-| **Academic** | JSTOR, ScienceDirect | API/Subscription |
-| **Court Records** | PACER, EU e-Justice | API |
-| **Corporate** | Orbis, Bureau van Dijk | API |
-| **Satellite** | Maxar, Planet Labs | API |
-
-### Dark Web
-
-| Domain | Source | Method | Risk |
-|--------|--------|--------|------|
-| **.onion forums** | Leak sites, discussion boards | Tor scraper | Medium |
-| **Markets** | Marketplace listings | Read-only scraper | Medium |
-| **Paste sites** | Darknet pastebins | Monitor | Low |
-| **Telegram** | Darknet channels | Bot/scraper | Low |
-| **IRC** | Darknet IRC networks | Bot | Low |
+**Principe :** Complexité en dessous, simplicité en surface.
 
 ---
 
-## Technical Architecture
+## 3. Stack Technique (Phase 1)
 
-### Stack
+| Couche | Techno | Pourquoi |
+|--------|--------|----------|
+| Frontend | Svelte + TS | UI réactive, légère |
+| Backend | Rust (axum) | Perf, sécurité, type-safe |
+| Plugins | Python | Flexibilité, écosystème OSINT |
+| Bridge | Flask + PyO3 | Rust ↔ Python |
+| Database | PostgreSQL + pgvector | 1 seul dep (graph + vector + text) |
+| CLI | Zig (deferred) | Binaires natifs, stable |
 
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| **Backend** | Rust (axum) | High-performance API, graph engine |
-| **Plugins** | Python | OSINT data sources, NLP, ML, Tor integration |
-| **CLI** | Zig | Static binary, offline mode |
-| **Frontend** | Svelte + MapLibre GL | Graph/map/timeline visualization |
-| **Database** | PostgreSQL + PostGIS | Entities, geospatial |
-| **Graph** | Neo4j | Relationships, network analysis |
-| **Search** | Meilisearch | Full-text search |
-| **Cache** | Redis | Session, rate limiting |
-| **Tor** | stem + socks5 | Dark web integration |
+**Décision Phase 1 :** Pas de Neo4j, Meilisearch, Kafka, gRPC. PostgreSQL suffit.
 
-### Dark Web Module (Python)
+---
 
-```python
-# plugins/sources/darkweb/onion_scraper.py
-import requests
-import stem
-from stem import Signal
-from stem.control import Controller
+## 4. Plugin Architecture
 
-def rotate_identity():
-    """Rotate Tor circuit for anonymity"""
-    with Controller.from_port(port=9051) as controller:
-        controller.authenticate()
-        controller.signal(Signal.NEWNYM)
+Chaque source = plugin indépendant avec contrat commun :
 
-def fetch_onion(url: str) -> dict:
-    """Fetch .onion page via Tor"""
-    proxies = {
-        'http': 'socks5h://127.0.0.1:9050',
-        'https': 'socks5h://127.0.0.1:9050'
-    }
-    response = requests.get(url, proxies=proxies, timeout=30)
-    rotate_identity()
-    return {
-        'url': url,
-        'status': response.status_code,
-        'content': response.text[:10000],  # Limit size
-        'timestamp': datetime.utcnow().isoformat()
-    }
-
-def monitor_marketplace(base_url: str) -> list:
-    """Monitor darknet marketplace listings (read-only)"""
-    listings = []
-    # Implementation: parse HTML, extract product info
-    # NO interaction, NO login, NO purchase
-    return listings
+```
+Rust → Plugin Interface → GDELT/ACLED/News/etc. → API Externe
 ```
 
-### Security Boundaries (Dark Web)
+**Avantages :**
+- Ajouter/supprimer des sources sans toucher le core
+- Rate limiter indépendant par source
+- Cache TTL variable par source
+- Auth spécifique par source
 
-| Do ✅ | Don't ❌ |
-|-------|---------|
-| Read-only scraping | Never post/interact |
-| Tor isolation (VM/container) | Never run from main machine |
-| No credentials stored | Never login to darknet services |
-| Legal sources only | No illegal content storage |
-| Automated circuit rotation | No persistent connections |
-| Log access for audit | No anonymization of logs |
+**Voir :** `docs/PLUGIN_API.md` (à écrire)
 
 ---
 
-## Feature Roadmap
+## 5. Performance Strategy
 
-### Phase 1 (MVP) — Clear Web Foundation
+**Règle :** Mesurer avant d'optimiser.
 
-- [ ] Entity search (PostgreSQL + Meilisearch)
-- [ ] Basic graph visualization (Neo4j)
-- [ ] 3 OSINT plugins (OpenCorporates, ACLED, GDELT)
-- [ ] Export to JSON/PDF
-- [ ] API endpoints (REST)
+Exemple de profil :
+```
+Requête totale : 1.7s
+├── External API : 620ms (36%)
+├── Normalization : 80ms (5%)
+├── Database : 90ms (5%)
+├── Graph gen : 45ms (3%)
+└── Rust API : 12ms (1%)
+```
 
-### Phase 2 — Live Intelligence (Osiris-inspired)
-
-- [ ] Map view (MapLibre GL + PostGIS)
-- [ ] Timeline view (temporal analysis)
-- [ ] Live feeds (flights, seismic, fires, news)
-- [ ] Network analysis (centrality, communities)
-- [ ] Telegram OSINT (geoparsed channels)
-
-### Phase 3 — Deep Web Integration
-
-- [ ] Academic journal connectors
-- [ ] Court records integration
-- [ ] Corporate registry APIs
-- [ ] Satellite imagery pipeline
-- [ ] Maritime tracking (AIS)
-
-### Phase 4 — Dark Web Module
-
-- [ ] Tor integration (stem library)
-- [ ] .onion scraper (forums, leaks)
-- [ ] Darknet paste monitor
-- [ ] Marketplace listing tracker (read-only)
-- [ ] IRC network monitor
-- [ ] Security isolation (container/VM)
-
-### Phase 5 — Sovereign Features
-
-- [ ] Offline mode (Zig CLI + local cache)
-- [ ] Multi-user collaboration
-- [ ] Plugin marketplace
-- [ ] Desktop app (Tauri)
-- [ ] EU hosting deployment scripts
-- [ ] GDPR compliance tools
+**Optimiser Rust = inutile.** Le goulot = API externe.
 
 ---
 
-## Competitive Positioning
+## 6. Cache + Rate Limiting
 
-| Feature | Palantir | Osiris | Le Coq |
-|---------|----------|--------|--------|
-| **Data Sources** | ✅ All | ✅ All | ✅ All |
-| **Clear Web** | ✅ | ✅ | ✅ |
-| **Deep Web** | ✅ | ❌ | ✅ |
-| **Dark Web** | ✅ (gov) | ❌ | ✅ |
-| **Graph Engine** | ✅ | ❌ | ✅ |
-| **Live Feeds** | ✅ | ✅ | ✅ |
-| **US Control** | ❌ Yes | ❌ Yes | ✅ No |
-| **EU Hosting** | ❌ | ❌ | ✅ |
-| **Offline Mode** | ❌ | ❌ | ✅ |
-| **Open Source** | ❌ | ✅ MIT | ✅ AGPL |
-| **Sovereign** | ❌ | ❌ | ✅ |
+### Cache
 
-### Unique Value Proposition
+| Type de donnée | TTL |
+|----------------|-----|
+| Métadonnées statiques | Heures/jours |
+| Recherche news | Minutes |
+| Données historiques | Jours/semaines |
 
-> **Le Coq = Best data (worldwide) + Sovereign control (EU) + Complete coverage (clear/deep/dark) + Knowledge graph**
+### Request Deduplication
+
+20 utilisateurs demandent la même requête simultanément :
+- **Sans dedup :** 20 appels API
+- **Avec dedup :** 1 appel API, résultat partagé
+
+**Impact :** Réduction quotas API de 20x. Critique pour GDELT/ACLED.
 
 ---
 
-## License Strategy
+## 7. Modèle de Données
 
-**AGPL-3.0** — Strong copyleft
+### Global vs Workspace
 
-| Why AGPL | Benefit |
-|----------|---------|
-| Network use = distribution | SaaS must open-source modifications |
-| Can absorb MIT code | Osiris (MIT) → Le Coq (AGPL) compatible |
-| Can't be closed by acquirer | Stays open forever |
-| European-friendly | Aligns with EU open-source values |
+**Global Data (public, partagé) :**
+- Événements, Acteurs, Organisations, Lieux, Sources
+- Un événement = 1 entrée, pas dupliqué par utilisateur
+
+**Workspace Data (privé, par utilisateur) :**
+- Investigations, Notes, Hypothèses, Relations personnalisées
+- Référence les événements globaux
+
+```
+                Événement Global #92831
+                   /                  \
+                  /                    \
+        Investigation A          Investigation B
+```
+
+**Avantages :**
+- Pas de duplication
+- Scalable multi-tenant
+- Données sources cohérentes
 
 ---
 
-## Infrastructure
+## 8. Multi-Tenant Architecture
 
-### Hosting (EU Only)
+```
+Organisation
+├── Utilisateur A
+│   ├── Investigation 1
+│   └── Investigation 2
+├── Utilisateur B
+└── Utilisateur C
+```
 
-| Provider | Location | Use |
-|----------|----------|-----|
-| **Hetzner** | 🇩🇪 Germany | Primary (VPS, GPU) |
-| **OVH** | 🇫🇷 France | Backup, redundancy |
-| **Scaleway** | 🇫🇷 France | Development |
+**Isolation :** Backend enforced, pas frontend trust.
 
-### Deployment
+**Déploiement :**
+- Community : Self-hosted
+- SaaS : Vendor-hosted
+- Enterprise : Customer infrastructure
 
-```bash
-# Production (Hetzner)
-docker compose -f docker/docker-compose.prod.yml up -d
+---
 
-# Development (local)
-docker compose -f docker/docker-compose.yml up -d
+## 9. 5 Timestamps par Événement
 
-# Offline mode (Zig CLI)
-./le-coq-cli sync    # Download latest data
-./le-coq-cli search  # Query offline
+| Champ | Signification |
+|-------|---------------|
+| `occurred_at` | Quand l'événement s'est produit |
+| `published_at` | Quand la source a publié |
+| `observed_at` | Quand la source a observé |
+| `collected_at` | Quand la plateforme a collecté |
+| `updated_at` | Quand la source a mis à jour |
+
+**Pourquoi :** Permet le **Historical Replay** : "Qu'est-ce qu'on savait à 10h00 ?"
+
+---
+
+## 10. Evidence & Provenance
+
+Chaque affirmation = traçable :
+
+```
+Claim : "Acteur X a organisé l'Événement Y"
+├── Source A → supporte
+├── Source B → supporte
+├── Source C → contredit
+└── Official statement → nie
+```
+
+**L'analyste voit :**
+- Source originale
+- Heure de publication
+- Identité de la source
+- Contradictions
+- Historique des changements
+
+---
+
+## 11. Confidence Levels
+
+La plateforme montre l'incertitude honnêtement :
+
+| Niveau | Signification |
+|--------|---------------|
+| `UNKNOWN` | Pas assez de données |
+| `UNVERIFIED` | 1 source, pas confirmé |
+| `CORROBORATED` | 2+ sources indépendantes |
+| `CONFIRMED` | Source primaire + vérification |
+| `DISPUTED` | Sources se contredisent |
+| `RETRACTED` | Source a retiré |
+
+**Principe :** "Insufficient evidence" = affiché clairement.
+
+---
+
+## 12. Historical Provenance
+
+**Jamais d'overwrite silencieux.**
+
+Exemple :
+```
+18:00 → Source rapporte X
+19:30 → Source modifie rapport
+20:00 → Source retire X
+```
+
+**Les 3 versions restent accessibles.**
+
+**Pourquoi :** L'analyste peut reconstruire l'évolution de l'information.
+
+---
+
+## 13. Timeline (Killer Feature)
+
+Même modèle d'événement = 3 vues :
+
+| Vue | Question |
+|-----|----------|
+| **Timeline** | Quand ? |
+| **Carte** | Où ? |
+| **Graphe** | Qui/quoi est connecté ? |
+
+**Exemple Timeline :**
+```
+27 MAR
+├── 08:14 Source A rapporte incident
+├── 08:32 Source B publie preuve
+├── 09:05 Official statement
+├── 10:41 Source A modifie rapport
+├── 12:20 Confirmation indépendante
+└── 15:03 Événement lié
 ```
 
 ---
 
-## Legal & Ethics
+## 14. Historical Replay (Killer Feature)
 
-### Dark Web Guidelines
+Slider temporel :
 
-1. **Read-only access** — No interaction, no posting
-2. **No illegal content storage** — Metadata only, content filtered
-3. **Tor isolation** — Run in dedicated VM/container
-4. **Audit logging** — All access logged for compliance
-5. **Legal review** — Consult EU law on darknet scraping
+```
+08:00 ─────────────────────────── 20:00
+        ▲
+        │
+      Slider
+```
 
-### Data Compliance
+**Question :** "Quelle information était disponible à 10h00 ?"
 
-- **GDPR** — EU data protection compliance
-- **Terms of Service** — Respect source
-- **Rate limiting** — Don't overload sources
-- **Attribution** — Credit data sources where required
+**Usage :** Étudier comment une situation a évolué, pas juste le résultat final.
 
 ---
 
-## The Vision
+## 15. Narrative Analysis (Différenciateur)
 
-> Build the world's most complete open-source intelligence platform.
->
-> Not American. Not Chinese. **European. Sovereign. Independent.**
->
-> All data sources. All layers. Full control.
->
-> For journalists. Investigators. Researchers. Citizens.
->
-> **So people can see the truth.**
+Même événement, 5 sources :
 
----
+```
+                    MÊME ÉVÉNEMENT
+                         │
+        ┌────────────────┼────────────────┐
+        ↓                ↓                ↓
+     Source A         Source B         Source C
+        │                │                │
+   Narrative A      Narrative B      Narrative C
+```
 
-## Next Steps
+**La plateforme montre :**
+- Descriptions différentes
+- Informations manquantes
+- Contradictions
+- Acteurs mis en avant
+- Terminologie différente
 
-1. ✅ Fork Osiris code (MIT = free to use)
-2. ✅ Adapt data source integrations (Python plugins)
-3. ✅ Build knowledge graph (Neo4j + Rust)
-4. ✅ Add MapLibre GL frontend (GPU rendering)
-5. ✅ Implement Tor integration (dark web module)
-6. ✅ Deploy on Hetzner (EU hosting)
-7. ✅ Release AGPL (stay open forever)
-
----
-
-**Built with** 🦀 **Rust**, 🐍 **Python**, ⚡ **Zig**, 🎯 **Svelte**, 🧅 **Tor**
-
-**Fabriqué en France** 🇫🇷
-
-**AGPL-3.0** — Stays open forever
+**Pas de :** "Source A a raison."
 
 ---
 
-*Last updated: 2026-07-04*  
-*Author: Ymad (yaya47)*  
-*Contact: ymad@ymad.fr*
+## 16. UX Principles
+
+**Problème :** Des millions de records ≠ interface overload.
+
+**Solutions :**
+- **Progressive disclosure** — Commence simple, approfondis sur demande
+- **View = Question** — Timeline (Quand?), Carte (Où?), Graphe (Qui?)
+- **Complexité en dessous** — L'analyste ne voit pas le moteur
+
+---
+
+## 17. Investigation UI
+
+```
+┌────────────────────────────────────────────────────┐
+│ Investigation : Incident Golfe d'Aden              │
+├──────────────┬─────────────────────────────────────┤
+│ FILTRES      │ VUE PRINCIPALE                      │
+│              │                                     │
+│ Acteurs      │ Timeline / Carte / Graphe           │
+│ Lieux        │                                     │
+│ Dates        │                                     │
+│ Sources      │                                     │
+│ Type         │                                     │
+├──────────────┴──────────────────────┬──────────────┤
+│ Timeline / Événements               │ Preuves      │
+│                                     │              │
+│ 14:32 Incident A                    │ Source A     │
+│ 15:01 Incident B                    │ Source B     │
+│ 16:43 Incident C                    │ Conflit      │
+└─────────────────────────────────────┴──────────────┘
+```
+
+---
+
+## 18. Core Data Model
+
+**Entités :**
+- User, Organization, Workspace, Investigation
+- Actor, Organization, Event, Location, Source
+- Observation, Claim, Evidence, Relationship
+
+**Relations :**
+```
+Actor ──participated_in──► Event
+Actor ──member_of────────► Organization
+Event ──occurred_at──────► Location
+Event ──supported_by─────► Evidence
+Claim ──contradicted_by──► Source
+Event ──related_to───────► Event
+```
+
+---
+
+## 19. AI Governance
+
+**AI = accélérateur, pas architecte.**
+
+**Humain possède :**
+- Architecture
+- Sécurité
+- Authorization
+- Data model
+- Product direction
+
+**Règle :** "If the AI produces code you cannot explain, don't merge it."
+
+**Workflow :**
+```
+AI implementation → Tests → AI review → Human review 
+                  → Understand → Benchmark → Commit
+```
+
+---
+
+## 20. Security Principles
+
+| Principe | Implémentation |
+|----------|----------------|
+| Auth forte | Sessions cryptographiquement sûres |
+| Isolation workspace | Backend enforced (DB level) |
+| Secrets | Jamais exposés au frontend |
+| Audit logging | Toutes actions critiques |
+| Rate limiting | Par utilisateur + par source |
+| TLS | nginx (prod) ou axum-tls (dev) |
+| Backup | Daily pg_dump + 7-day rotation |
+
+**Voir :** `docs/SECURITY.md`
+
+---
+
+## 21. Scalability
+
+**MVP :** ~1,000 records
+
+**Cible :** 1,000,000+ records
+
+**Technos (si besoin) :**
+- PostgreSQL + PostGIS + pgvector
+- Redis (cache)
+- Object storage (preuves, médias)
+- Search engine (si full-text PostgreSQL insuffisant)
+- Background workers (ingestion async)
+
+**Principe :** Commence simple, ajoute quand profiling montre le besoin.
+
+---
+
+## 22. Entity Resolution (Phase 3)
+
+Même entité, noms différents :
+
+```
+                    "Donald Trump"
+                    /     |     \
+             "Trump"  "President Trump"  "Donald J. Trump"
+```
+
+** requis :**
+- Similarité temporelle
+- Similarité géographique
+- Overlap d'entités
+- Similarité texte
+- Relations entre sources
+
+---
+
+## 23. Event Correlation (Phase 3)
+
+5 sources = même événement réel :
+
+```
+Source A ─────┐
+Source B ─────┼──► Même Événement
+Source C ─────┤
+Source D ─────┘
+```
+
+**Au lieu de :** 4 événements indépendants.
+
+---
+
+## 24. Roadmap 6 Phases
+
+| Phase | Focus | Durée | Livrables |
+|-------|-------|-------|-----------|
+| **1 — MVP** | Maintenant | 4 semaines | Auth, isolation, cache, rate limit, dedup, sécurité |
+| **2 — UX** | +2-3 mois | Timeline, preuves, pages acteur/événement/source, filtres, search |
+| **3 — Intelligence** | +3-6 mois | Entity resolution, correlation, semantic search, clustering |
+| **4 — Live** | +6-12 mois | Event streams, SSE/WebSocket, live map, alerts, replay slider |
+| **5 — SaaS** | +12-18 mois | Orgs, billing, RBAC, SSO, audit logs, collaboration |
+| **6 — Enterprise** | +18-24 mois | Self-hosted, enterprise auth, private networking |
+
+---
+
+## 25. Métriques de Succès (Phase 1)
+
+| Métrique | Cible | Pourquoi |
+|----------|-------|----------|
+| p95 latency | <200ms | UX fluide |
+| Cache hit rate | >60% | Réduction API calls |
+| API quota reduction | >10x | Dedup + cache |
+| Uptime | >99% | Confiance utilisateur |
+| Time to ingest 100 events | <5 min | Performance ingestion |
+
+**Validation utilisateur :**
+- 1 analyste réel utilise la plateforme sur 1 événement
+- Tu observes où il bloque (sans parler)
+- Tu fixes ces points avant d'ajouter des features
+
+---
+
+## 26. Différenciation Produit
+
+**Pas :** "On a le plus de données."
+
+**Mais :** "On rend l'information géopolitique complexe plus facile à investiguer."
+
+**Différenciateurs :**
+- Spécialisation géopolitique
+- Architecture event-first
+- Timeline-centric
+- Transparence des preuves
+- Source provenance
+- Narrative comparison
+- Historical replay
+- Open-source core
+- Self-hosting possible
+
+---
+
+## 27. Business Model
+
+**Open Source :**
+- Core backend
+- Data model
+- Plugin SDK
+- Connecteurs de base
+- UI de base
+- Self-hosting
+
+**Premium SaaS :**
+- Infrastructure managée
+- Sources premium
+- Ingestion à grande échelle
+- Monitoring continu
+- Alerts
+- Advanced correlation
+- Semantic search
+- Collaboration
+- Backups
+- Intégrations enterprise
+
+**Principe :** Logiciel open + infrastructure/data/scale payants.
+
+---
+
+## 28. Utilisateurs Cibles
+
+- Researchers OSINT
+- Journalistes d'investigation
+- Analystes géopolitiques
+- Researchers conflits
+- Analystes sécurité
+- Universités
+
+**Validation :**
+- Pas : "Tu aimes mon produit ?"
+- Mais : "Investigue cet événement et dis-moi où tu bloques"
+
+---
+
+## 29. Core Product Philosophy
+
+La plateforme doit être :
+- Puissante en dessous
+- Simple en surface
+- Evidence-driven
+- Transparente
+- Source-aware
+- Timeline-oriented
+- Géographiquement aware
+- Relationship-aware
+- Contrôlée par l'humain
+
+**Peut contenir des millions de records. L'utilisateur doit comprendre ce qu'il voit.**
+
+---
+
+## 30. Final Principle
+
+> **Build a microscope, not an oracle.**
+
+La plateforme aide les humains à investiguer sans prétendre juger à leur place.
+
+**Ambition :** Grande.
+**Implémentation :** Incrémentale.
+
+```
+Build → Test → Measure → Observe → Improve → Repeat
+```
+
+---
+
+## Appendix A : Ce qui est Phase 1 vs Future
+
+| Feature | Phase | Priorité |
+|---------|-------|----------|
+| Auth + isolation | 1 | 🔴 Critique |
+| Cache + rate limit | 1 | 🔴 Critique |
+| Request dedup | 1 | 🔴 Critique |
+| Timeline basique | 2 | 🟠 High |
+| Evidence panel | 2 | 🟠 High |
+| Entity resolution | 3 | 🟡 Medium |
+| Event correlation | 3 | 🟡 Medium |
+| Live SSE/WebSocket | 4 | 🟡 Medium |
+| SaaS billing | 5 | ⚪ Low (now) |
+| Enterprise SSO | 6 | ⚪ Low (now) |
+
+**Ne pas construire Phases 3-6 maintenant.** Valider Phase 1 d'abord.
+
+---
+
+## Appendix B : Documents Requis
+
+| Doc | Statut | Priorité |
+|-----|--------|----------|
+| `PLUGIN_API.md` | ❌ À écrire | 🔴 High |
+| `DATA_MODEL.md` | ❌ À écrire | 🔴 High |
+| `SECURITY.md` | ⚠️ Partiel | 🔴 High |
+| `DEPLOYMENT.md` | ⚠️ Partiel | 🟠 Medium |
+| `PHASE1_METRICS.md` | ❌ À écrire | 🟠 Medium |
+
+---
+
+*Version : 1.0 — Août 2026*
+*Basé sur vision document 50 sections — consolidé en 30 sections*

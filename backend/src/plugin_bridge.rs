@@ -29,14 +29,18 @@ pub fn init_python() -> Result<(), String> {
         // Add paths in order: plugins site-packages first (for deps), then plugins, then le-coq root
         // INSERT en tête (position 0) : un VIRTUAL_ENV externe peut injecter
         // un venv Python 3.14 en premier, masquant les deps cp311.
+        let site_packages = crate::config::plugins_site_packages();
+        let plugins_dir = crate::config::plugins_dir();
+        let le_coq_root = crate::config::le_coq_root();
+
         path_list
-            .insert(0, "/home/yaya/le-coq/plugins/.venv/lib/python3.11/site-packages")
+            .insert(0, site_packages.to_string_lossy().as_ref())
             .map_err(|e| format!("Failed to insert site-packages: {}", e))?;
         path_list
-            .append("/home/yaya/le-coq/plugins")
+            .append(plugins_dir.to_string_lossy().as_ref())
             .map_err(|e| format!("Failed to append plugins: {}", e))?;
         path_list
-            .append("/home/yaya/le-coq")
+            .append(le_coq_root.to_string_lossy().as_ref())
             .map_err(|e| format!("Failed to append le-coq root: {}", e))?;
 
         // debug: print sys.path + probe import
@@ -57,7 +61,8 @@ pub fn call_plugin_method(
     method: &str,
     args: &Value,
 ) -> Result<PluginResult, String> {
-    Python::with_gil(|py| {
+    let start = std::time::Instant::now();
+    let result = Python::with_gil(|py| {
         // Import the plugins module
         let plugins_module = py
             .import("plugins")
@@ -83,7 +88,15 @@ pub fn call_plugin_method(
             data: Some(result_value),
             error: None,
         })
-    })
+    });
+    tracing::info!(
+        plugin = %plugin_name,
+        method = %method,
+        duration_ms = start.elapsed().as_millis(),
+        success = result.is_ok(),
+        "plugin call"
+    );
+    result
 }
 
 /// List all available plugins

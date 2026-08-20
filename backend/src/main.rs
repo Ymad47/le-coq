@@ -6,6 +6,9 @@ mod graph;
 mod plugin_bridge;
 mod ingestion;
 mod models;
+mod config;
+mod dedup;
+mod poller;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -54,9 +57,27 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         postgres: postgres_pool,
         config: config.clone(),
+        dedup: crate::dedup::InflightRequests::new(),
     });
 
-    let app = api::create_router(state).layer(TraceLayer::new_for_http());
+    let app = api::create_router(state).layer(
+        TraceLayer::new_for_http()
+            .make_span_with(|request: &axum::http::Request<_>| {
+                tracing::info_span!(
+                    "http_request",
+                    method = %request.method(),
+                    uri = %request.uri(),
+                )
+            })
+            .on_response(|response: &axum::http::Response<axum::body::Body>, latency: std::time::Duration, span: &tracing::Span| {
+                let _enter = span.enter();
+                tracing::info!(
+                    status = %response.status(),
+                    latency_ms = latency.as_millis(),
+                    "request completed"
+                );
+            }),
+    );
 
     let addr: SocketAddr = config.bind_address.parse()?;
     tracing::info!("🚀 Server listening on {}", addr);
@@ -71,6 +92,7 @@ async fn main() -> Result<()> {
 pub struct AppState {
     pub postgres: sqlx::Pool<sqlx::Postgres>,
     pub config: Config,
+    pub dedup: crate::dedup::InflightRequests,
 }
 
 #[derive(Clone)]

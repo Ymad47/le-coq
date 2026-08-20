@@ -2,7 +2,9 @@
 //! Re-exports all modules for testing
 
 pub mod api;
+pub mod config;
 pub mod db;
+pub mod dedup;
 pub mod graph;
 pub mod ingestion;
 pub mod models;
@@ -15,6 +17,17 @@ pub use plugin_bridge::*;
 pub struct AppState {
     pub postgres: sqlx::Pool<sqlx::Postgres>,
     pub config: Config,
+    pub dedup: crate::dedup::InflightRequests,
+}
+
+impl AppState {
+    pub fn new(postgres: sqlx::Pool<sqlx::Postgres>, config: Config) -> Self {
+        Self {
+            postgres,
+            config,
+            dedup: crate::dedup::InflightRequests::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
