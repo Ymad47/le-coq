@@ -15,9 +15,11 @@ use crate::plugin_bridge::PluginResult;
 /// Thread-safe tracker of in-flight requests.
 /// Key: dedup key (e.g. "gdelt:query=gaza&limit=50")
 /// Value: broadcast sender (subscribers receive the result when it completes)
+type ResultSender = broadcast::Sender<Result<PluginResult, String>>;
+
 #[derive(Clone, Default)]
 pub struct InflightRequests {
-    pending: Arc<Mutex<HashMap<String, broadcast::Sender<Result<PluginResult, String>>>>>,
+    pending: Arc<Mutex<HashMap<String, ResultSender>>>,
 }
 
 impl InflightRequests {

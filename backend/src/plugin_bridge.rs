@@ -315,27 +315,9 @@ fn pydict_to_json(obj: &PyAny) -> PyResult<Value> {
     Ok(Value::Null)
 }
 
-/// Capitalize first letter of a string
-fn capitalize_first(s: &str) -> String {
-    if s.is_empty() {
-        return String::new();
-    }
-    let mut chars = s.chars();
-    chars.next().unwrap().to_uppercase().collect::<String>() + chars.as_str()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_capitalize_first() {
-        assert_eq!(capitalize_first("wikipedia"), "Wikipedia");
-        assert_eq!(capitalize_first("acled"), "Acled");
-        assert_eq!(capitalize_first("gdelt"), "Gdelt");
-        assert_eq!(capitalize_first("opencorporates"), "Opencorporates");
-        assert_eq!(capitalize_first(""), "");
-    }
 
     #[test]
     fn test_json_to_pydict_string() {
@@ -363,7 +345,7 @@ mod tests {
             let value = Value::Bool(true);
             let result = json_to_pydict(py, &value).unwrap();
             let b = result.extract::<bool>(py).unwrap();
-            assert_eq!(b, true);
+            assert!(b);
         });
     }
 
@@ -458,7 +440,7 @@ mod tests {
     #[test]
     fn test_pydict_to_json_list() {
         Python::with_gil(|py| {
-            let list = PyList::new(py, &[1i64, 2i64, 3i64]);
+            let list = PyList::new(py, [1i64, 2i64, 3i64]);
             let result = pydict_to_json(list.as_ref()).unwrap();
             assert_eq!(result, Value::Array(vec![
                 Value::Number(serde_json::Number::from(1)),

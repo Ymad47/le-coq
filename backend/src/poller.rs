@@ -16,9 +16,12 @@ struct LeChasseurOutput {
     collected_at: String,
     #[serde(default)]
     entities: Vec<Entity>,
+    // Parsed to validate the file shape; the poller only ingests entities so far.
     #[serde(default)]
+    #[allow(dead_code)]
     events: Vec<Value>,
     #[serde(default)]
+    #[allow(dead_code)]
     relationships: Vec<Value>,
 }
 
@@ -140,7 +143,7 @@ impl Poller {
         }
 
         // Sort by timestamp (oldest first)
-        new_files.sort_by(|a, b| a.2.cmp(&b.2));
+        new_files.sort_by_key(|(_, _, ts)| *ts);
 
         // Process new files
         for (path, filename, timestamp) in new_files {

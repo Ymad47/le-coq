@@ -141,7 +141,7 @@ pub async fn topic_entities(pool: &PgPool, q: &str) -> Result<Vec<EntityRow>, sq
 
     let rows = sqlx::query(sql)
         .bind(&pattern)
-        .bind(&q.to_lowercase())
+        .bind(q.to_lowercase())
         .fetch_all(pool)
         .await?;
 
