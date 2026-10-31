@@ -9,6 +9,10 @@
   export let relationships: Relationship[] = [];
   export let focusHubId: string | null = null;
   export let initialLayout: 'cose' | 'breadthfirst' | 'concentric' | 'circle' = 'cose';
+  /** True when the backend capped the number of relations returned. */
+  export let truncated = false;
+  /** Short description of what the graph shows (e.g. "voisinage de 12 résultats"). */
+  export let scopeLabel = '';
 
   const dispatch = createEventDispatcher<{
     nodeSelected: GraphNode;
@@ -392,8 +396,11 @@
   }
 </script>
 
-<div class="graph-toolbar">
-  <span class="graph-stats">{nodeCount} nœuds · {edgeCount} arêtes</span>
+<div class="view-toolbar">
+  <span class="stats">
+    {nodeCount} nœuds · {edgeCount} arêtes{scopeLabel ? ` · ${scopeLabel}` : ''}
+    {#if truncated}<span class="truncated" title="Le backend a plafonné le nombre de relations renvoyées">· tronqué</span>{/if}
+  </span>
   <button class="secondary small" on:click={() => { showIsolated = !showIsolated; renderGraph(); }}>
     {showIsolated ? '👁️ Masquer orphelins' : '👁️‍🗨️ Tout afficher'}
   </button>
@@ -425,7 +432,7 @@
     <aside class="node-panel">
       <div class="panel-head">
         <h3>{selectedNode.label ?? selectedNode.id ?? 'Entité'}</h3>
-        <button class="close" on:click={() => { selectedNode = null; dispatch('nodeCleared'); cy?.elements().removeClass('dim'); }}>×</button>
+        <button class="ghost icon" aria-label="Fermer" on:click={() => { selectedNode = null; dispatch('nodeCleared'); cy?.elements().removeClass('dim'); }}>×</button>
       </div>
       <div class="panel-body">
         <div class="kv"><span class="k">Type</span><span class="v badge">{selectedNode.type}</span></div>
@@ -451,22 +458,7 @@
 </div>
 
 <style>
-  .graph-toolbar {
-    display: flex;
-    gap: 0.75rem;
-    align-items: center;
-    margin-bottom: 1rem;
-    padding: 0.75rem;
-    background: rgba(255, 255, 255, 0.03);
-    backdrop-filter: blur(20px) saturate(180%);
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-  }
 
-  .graph-stats {
-    color: #94a3b8;
-    font-size: 0.85rem;
-  }
 
   .year-slider {
     display: flex;
@@ -484,14 +476,6 @@
     width: 130px;
   }
 
-  select {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
-    color: #e2e8f0;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.85rem;
-  }
 
   .graph-container {
     display: flex;
@@ -499,9 +483,13 @@
     align-items: flex-start;
   }
 
+  .truncated {
+    color: var(--warn);
+  }
+
   .graph-wrap {
     flex: 1;
-    height: 70vh;
+    height: calc(100vh - 230px);
     min-height: 400px;
     background: rgba(255, 255, 255, 0.02);
     border: 1px solid rgba(255, 255, 255, 0.06);
@@ -534,19 +522,7 @@
     flex: 1;
   }
 
-  .close {
-    background: none;
-    border: none;
-    color: #94a3b8;
-    font-size: 1.3rem;
-    cursor: pointer;
-    padding: 0;
-    line-height: 1;
-  }
 
-  .close:hover {
-    color: #e2e8f0;
-  }
 
   .panel-body {
     display: flex;
@@ -584,12 +560,4 @@
     margin-top: 1rem;
   }
 
-  select {
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 8px;
-    color: #e2e8f0;
-    padding: 0.4rem 0.6rem;
-    font-size: 0.85rem;
-  }
 </style>

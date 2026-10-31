@@ -1,5 +1,5 @@
 // API client for Le Coq backend
-import type { Entity, Relationship, SearchResponse, EntitySummary } from './types';
+import type { Entity, Relationship, SearchResponse, EntitySummary, Neighborhood } from './types';
 
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const resp = await fetch(path, opts);
@@ -42,8 +42,20 @@ export async function listSources(): Promise<string[]> {
   return api<string[]>('/api/v1/sources');
 }
 
+// /health returns plain text, not JSON
 export async function checkHealth(): Promise<string> {
-  return api<string>('/health');
+  const resp = await fetch('/health');
+  if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+  return (await resp.text()).trim();
+}
+
+/** 1-hop subgraph around the given entities (seeds + their direct neighbors). */
+export async function getNeighborhood(ids: string[], limit = 2000): Promise<Neighborhood> {
+  return api<Neighborhood>('/api/v1/graph/neighborhood', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: ids.slice(0, 500), limit }),
+  });
 }
 
 export async function reloadPlugins(): Promise<{ reloaded: boolean; loaded: string[]; failed?: any[] }> {

@@ -2,7 +2,7 @@
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import type { Entity, ArticleRelation } from '../lib/types';
   import { typeBadge, stripSourcePrefix } from '../lib/utils';
-  import { getEntitySummary, listRelationships } from '../lib/api';
+  import { getEntitySummary, getNeighborhood } from '../lib/api';
 
   export let entity: Entity | null = null;
 
@@ -22,10 +22,12 @@
     articleRelations = [];
     articleSummary = null;
     try {
-      const [rels, summaryRes] = await Promise.all([
-        listRelationships(5000),
+      // Only this entity's own relations, not the whole table
+      const [hood, summaryRes] = await Promise.all([
+        getNeighborhood([e.id], 500),
         getEntitySummary(e.id).catch(() => null),
       ]);
+      const rels = hood.relationships;
       const id = e.id;
       articleRelations = rels
         .filter((r) => {
