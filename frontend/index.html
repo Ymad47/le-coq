@@ -3,7 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Le Coq — Intelligence Géopolitique</title>
+    <meta name="theme-color" content="#f4f6fa" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b0f1a" media="(prefers-color-scheme: dark)" />
+    <meta name="description" content="Le Coq — Geopolitical Intelligence Platform. Understand the world. Connect the signals. / Comprendre le monde. Relier les signaux." />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Le Coq — Geopolitical Intelligence Platform</title>
+    <script>
+      // Apply the theme before first paint (avoids a light/dark flash).
+      (function () {
+        var t = null;
+        try { t = localStorage.getItem('lecoq-theme'); } catch (e) {}
+        if (t !== 'light' && t !== 'dark') {
+          t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.dataset.theme = t;
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

@@ -1,8 +1,8 @@
 <script lang="ts">
   import type { Entity } from '../lib/types';
-  import { typeBadge } from '../lib/utils';
   import { entityIso2, countryLabel } from '../lib/countries';
   import { createEventDispatcher } from 'svelte';
+  import Icon from './Icon.svelte';
 
   export let entities: Entity[] = [];
   export let loading = false;
@@ -53,9 +53,9 @@
   }
 </script>
 
-<section class="results">
+<section class="results" aria-busy={loading}>
   {#if loading}
-    <div class="grid">
+    <div class="grid" aria-label="Chargement des résultats">
       {#each Array(6) as _}
         <div class="skeleton card-skeleton"></div>
       {/each}
@@ -64,17 +64,19 @@
     <div class="empty panel">
       {#if filtered}
         <h2>Aucune entité pour ces filtres</h2>
-        <p>Les résultats existent mais sont masqués par le filtre de type.</p>
+        <p>Des résultats existent mais sont masqués par le filtre de type.</p>
         <button class="secondary" on:click={() => dispatch('clearFilters')}>Réinitialiser les filtres</button>
       {:else if query.trim()}
         <h2>Aucun résultat pour « {query} »</h2>
-        <p>Rien en base pour l'instant. Lancez une recherche sur les sources externes pour l'ingérer.</p>
-        <button on:click={() => dispatch('suggest', { query })}>🌐 Chercher « {query} » en ligne</button>
+        <p>Rien en base pour l'instant. Interrogez les sources externes pour ingérer des données.</p>
+        <button on:click={() => dispatch('suggest', { query })}>
+          <span class="btn-inner"><Icon name="globe" size={16} /> Chercher « {query} » en ligne</span>
+        </button>
       {:else}
         <h2>La base est vide</h2>
         <p>
-          Lancez une recherche avec <strong>Sources externes</strong> activé : les résultats
-          (Wikipedia, Wikidata, GLEIF…) sont ingérés et mis en cache.
+          Lancez une recherche avec les sources externes activées : les résultats (Wikipedia, Wikidata,
+          GLEIF…) sont ingérés et conservés en base.
         </p>
         <div class="suggestions">
           {#each SUGGESTIONS as s}
@@ -86,8 +88,8 @@
   {:else}
     <div class="view-toolbar">
       <span class="stats">
-        {entities.length} entité{entities.length !== 1 ? 's' : ''} · {groups.length}
-        groupe{groups.length !== 1 ? 's' : ''}
+        <strong class="num">{entities.length}</strong> entité{entities.length !== 1 ? 's' : ''} ·
+        <span class="num">{groups.length}</span> groupe{groups.length !== 1 ? 's' : ''}
       </span>
       <label class="group-by">
         Grouper par
@@ -99,26 +101,32 @@
     </div>
 
     {#each groups as [key, list] (key)}
-      <div class="group">
+      <section class="group">
         <h2 class="group-title">
-          {groupBy === 'type' ? typeBadge(key === NO_GROUP ? null : key) : '🌍'}
-          {groupLabel(key)} <span class="group-count">{list.length}</span>
+          {groupLabel(key)}
+          {#if groupBy === 'country' && /^[A-Z]{2}$/.test(key)}<span class="mono code">{key}</span>{/if}
+          <span class="group-count num">{list.length}</span>
         </h2>
         <div class="grid">
           {#each list as e (e.id)}
             {@const desc = e.description ?? e.properties?.description}
             {@const src = e.properties?.source}
+            {@const iso = entityIso2(e)}
             <button type="button" class="card" on:click={() => dispatch('openArticle', e)}>
               <span class="card-head">
-                <span class="badge">{typeBadge(e.entity_type ?? e.type)} {e.entity_type ?? e.type ?? 'entité'}</span>
+                <span class="badge">{e.entity_type ?? e.type ?? 'entité'}</span>
                 {#if src}<span class="src-badge">{src}</span>{/if}
               </span>
               <span class="card-title">{e.name}</span>
               {#if desc}<span class="card-desc">{desc}</span>{/if}
+              <span class="card-foot">
+                <span class="mono card-id" title={e.id}>{e.id}</span>
+                {#if iso}<span class="mono">{iso}</span>{/if}
+              </span>
             </button>
           {/each}
         </div>
-      </div>
+      </section>
     {/each}
   {/if}
 </section>
@@ -129,35 +137,40 @@
   }
 
   .group-title {
-    font-size: 1rem;
-    font-weight: 600;
-    color: var(--teal);
-    margin: 0 0 0.6rem;
     display: flex;
     align-items: center;
-    gap: 0.4rem;
+    gap: 0.5rem;
+    margin: 0 0 0.6rem;
+    font-size: var(--fs-md);
+    font-weight: 650;
+  }
+
+  .code {
+    color: var(--text-3);
+    font-weight: 500;
   }
 
   .group-count {
-    color: var(--text-dimmer);
-    font-weight: 500;
-    font-size: 0.85em;
-    background: var(--surface-strong);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--text-2);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
     border-radius: 999px;
-    padding: 0 0.5rem;
+    padding: 0 0.45rem;
   }
 
   .group-by {
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    color: var(--text-dim);
-    font-size: 0.82rem;
+    color: var(--text-2);
+    font-size: var(--fs-xs);
   }
 
   .group-by select {
     padding: 0.25rem 0.5rem;
-    font-size: 0.82rem;
+    font-size: var(--fs-xs);
   }
 
   .grid {
@@ -171,22 +184,24 @@
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 0.4rem;
+    gap: 0.45rem;
     text-align: left;
     white-space: normal;
     font-weight: 400;
+    font-size: var(--fs-base);
     color: var(--text);
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    padding: 0.9rem 1.1rem;
-    transition: background 0.15s, border-color 0.15s, transform 0.15s;
+    box-shadow: var(--shadow-sm);
+    padding: 0.9rem 1rem 0.75rem;
+    transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
   }
 
   .card:hover:not(:disabled) {
-    background: var(--surface-hover);
-    border-color: rgba(45, 212, 191, 0.35);
-    transform: translateY(-1px);
+    background: var(--surface);
+    border-color: var(--brand-line);
+    box-shadow: var(--shadow);
   }
 
   .card-head {
@@ -197,14 +212,15 @@
   }
 
   .card-title {
-    font-size: 0.98rem;
+    font-size: var(--fs-md);
     font-weight: 600;
+    line-height: 1.3;
   }
 
   .card-desc {
-    font-size: 0.84rem;
-    color: var(--text-dim);
-    line-height: 1.45;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    line-height: 1.5;
     display: -webkit-box;
     -webkit-line-clamp: 3;
     line-clamp: 3;
@@ -212,25 +228,48 @@
     overflow: hidden;
   }
 
+  .card-foot {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-top: auto;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--border);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+  }
+
+  .card-id {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .card-skeleton {
-    height: 120px;
+    height: 140px;
   }
 
   .empty {
     text-align: center;
     padding: 3rem 1.5rem;
-    max-width: 640px;
+    max-width: 620px;
     margin: 2rem auto;
   }
 
   .empty h2 {
     margin: 0 0 0.5rem;
-    font-size: 1.15rem;
+    font-size: var(--fs-lg);
   }
 
   .empty p {
-    color: var(--text-dim);
+    color: var(--text-2);
     margin: 0 0 1.25rem;
+  }
+
+  .btn-inner {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
   }
 
   .suggestions {
@@ -238,14 +277,5 @@
     flex-wrap: wrap;
     justify-content: center;
     gap: 0.5rem;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .card {
-      transition: none;
-    }
-    .card:hover:not(:disabled) {
-      transform: none;
-    }
   }
 </style>

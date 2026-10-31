@@ -3,6 +3,11 @@
   import { createEventDispatcher } from 'svelte';
   import type { Entity, MapCountryInfo } from '../lib/types';
   import { entityIso2, registerRegionNames } from '../lib/countries';
+  import { vizPalette, mixHex } from '../lib/tokens';
+  import { loadWorldMerc } from '../lib/worldMap';
+  // Structural styles (tooltip show/hide, zoom buttons, container); colors are
+  // remapped to our tokens in app.css (--jvm-* variables).
+  import 'jsvectormap/dist/jsvectormap.css';
 
   export let entities: Entity[] = [];
 
@@ -21,12 +26,9 @@
   export async function renderMap(): Promise<void> {
     if (!mapEl) return;
     try {
-      const mod = await import('jsvectormap');
-      await import('jsvectormap/dist/maps/world-merc.js');
-      const jsVectorMap = (mod as any).default ?? (window as any).jsVectorMap;
-      if (!jsVectorMap) { error = 'jsvectormap non chargé'; return; }
+      const { jsVectorMap, worldMerc } = await loadWorldMerc();
       // Region names must be known before matching entities by country name
-      registerRegionNames((jsVectorMap as any).maps?.world_merc?.paths ?? {});
+      registerRegionNames(worldMerc.paths ?? {});
 
       // Map regions are keyed by ISO-2 (FR, US…)
       const counts = new Map<string, number>();
@@ -42,22 +44,29 @@
 
       const regionNames = new Map<string, string>();
 
+      // Colors come from the active theme's tokens
+      const palette = vizPalette();
       worldMap = new jsVectorMap({
         selector: mapEl,
         map: 'world_merc',
         backgroundColor: 'transparent',
         regionStyle: {
-          initial: { fill: 'rgba(255,255,255,0.06)', stroke: 'rgba(255,255,255,0.12)', strokeWidth: 0.4 },
-          hover: { fill: '#14b8a6', fillOpacity: 0.75, stroke: 'rgba(255,255,255,0.3)' },
-          selected: { fill: '#2dd4bf', fillOpacity: 0.95 },
+          initial: { fill: palette.mapEmpty, stroke: palette.mapStroke, strokeWidth: 0.5 },
+          hover: { fill: palette.mapHover, fillOpacity: 1, stroke: palette.mapStroke },
+          selected: { fill: palette.brandText, fillOpacity: 1 },
         },
         series: {
+          // jsvectormap 1.7 only supports ordinal scales (value -> color) and
+          // ignores min/max/normalizeFunction, so the gradient is computed here.
+          // Log scale: entity counts per country are very skewed.
           regions: [{
             values,
-            scale: ['#1f2937', '#2dd4bf'],
-            normalizeFunction: 'linear',
-            min: 0,
-            max,
+            scale: Object.fromEntries(
+              [...new Set(counts.values())].map((v) => [
+                v,
+                mixHex(palette.mapLow, palette.mapHigh, max > 1 ? Math.log1p(v) / Math.log1p(max) : 1),
+              ])
+            ),
           }],
         },
         onRegionTooltipShow: (evt: any, tooltip: any, code: string) => {
@@ -79,7 +88,7 @@
       });
 
       try {
-        const paths = (jsVectorMap as any).maps?.world_merc?.paths ?? {};
+        const paths = worldMerc.paths ?? {};
         for (const [code, data] of Object.entries(paths)) {
           if ((data as any)?.name) regionNames.set(code, (data as any).name);
         }
@@ -111,13 +120,22 @@
 <div class="map-wrap" bind:this={mapEl}></div>
 
 <style>
-
   .map-wrap {
-    height: 70vh;
-    min-height: 400px;
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 16px;
-    backdrop-filter: blur(20px);
+    position: relative;
+    overflow: hidden;
+    height: calc(100vh - var(--topbar-h) - 140px);
+    min-height: 420px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+  }
+
+
+  @media (max-width: 820px) {
+    .map-wrap {
+      height: 55vh;
+      min-height: 300px;
+    }
   }
 </style>

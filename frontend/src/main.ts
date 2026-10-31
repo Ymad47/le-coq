@@ -1,4 +1,6 @@
+import '@fontsource-variable/inter';
 import './app.css';
+import './lib/theme';
 import App from './App.svelte';
 
 const app = new App({
