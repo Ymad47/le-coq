@@ -3,7 +3,10 @@
   import type { Entity, Relationship, View, MapCountryInfo, Neighborhood } from './lib/types';
   import * as api from './lib/api';
   import { readRoute, writeRoute } from './lib/route';
-  import { typeBadge } from './lib/utils';
+  import { theme, toggleTheme } from './lib/theme';
+  import Logo from './components/Logo.svelte';
+  import Icon, { type IconName } from './components/Icon.svelte';
+  import Home from './components/Home.svelte';
   import ListView from './components/ListView.svelte';
   import GraphView from './components/GraphView.svelte';
   import MapView from './components/MapView.svelte';
@@ -11,7 +14,7 @@
 
   // === State ===
   let query = '';
-  let view: View = 'list';
+  let view: View = 'home';
 
   /** Search results (list view + seeds of the graph view). */
   let entities: Entity[] = [];
@@ -43,16 +46,19 @@
 
   let articleEntity: Entity | null = null;
   let mapInfo: MapCountryInfo | null = null;
+  /** Mobile only: the filter sidebar is folded behind a button. */
+  let filtersOpen = false;
 
   let graphView: GraphView;
   let mapView: MapView;
   let searchInput: HTMLInputElement;
 
-  const TABS: { id: View; label: string; key: string; hint: string }[] = [
-    { id: 'list', label: 'Liste', key: '1', hint: 'Résultats groupés par pays ou par type' },
-    { id: 'graph', label: 'Graphe', key: '2', hint: 'Résultats et leurs voisins directs' },
-    { id: 'focus', label: 'Focus', key: '3', hint: "Graphe centré sur l'entité recherchée (2 sauts)" },
-    { id: 'map', label: 'Carte', key: '4', hint: "Densité d'entités par pays (toute la base)" },
+  const TABS: { id: View; label: string; key: string; icon: IconName; hint: string }[] = [
+    { id: 'home', label: 'Accueil', key: '0', icon: 'home', hint: 'Présentation et état de la plateforme' },
+    { id: 'list', label: 'Liste', key: '1', icon: 'list', hint: 'Résultats groupés par pays ou par type' },
+    { id: 'graph', label: 'Graphe', key: '2', icon: 'graph', hint: 'Résultats et leurs voisins directs' },
+    { id: 'focus', label: 'Focus', key: '3', icon: 'focus', hint: "Graphe centré sur l'entité recherchée (2 sauts)" },
+    { id: 'map', label: 'Carte', key: '4', icon: 'map', hint: "Densité d'entités par pays (toute la base)" },
   ];
 
   // Each load gets a token; responses from an outdated request are dropped.
@@ -68,6 +74,19 @@
   })();
 
   $: visibleEntities = hiddenTypes.size ? entities.filter((e) => !hiddenTypes.has(typeOf(e))) : entities;
+
+  // Canvas views (graph, map) read theme colors at render time: redraw on switch.
+  let lastTheme = $theme;
+  $: if ($theme !== lastTheme) {
+    lastTheme = $theme;
+    redrawForTheme();
+  }
+
+  async function redrawForTheme(): Promise<void> {
+    await tick();
+    if (view === 'graph' || view === 'focus') await graphView?.renderGraph();
+    if (view === 'map') await mapView?.renderMap();
+  }
 
   // === Data loading ===
 
@@ -234,6 +253,13 @@
   async function activate(v: View, opts: { search?: boolean; online?: boolean } = {}): Promise<void> {
     view = v;
     mapInfo = null;
+    if (v === 'home') {
+      // Invalidate in-flight loads; the home page fetches its own stats
+      ++requestToken;
+      loading = false;
+      searching = false;
+      return;
+    }
     if (v === 'map') return loadMap();
     if (opts.search) {
       const ok = await runSearch(opts.online ?? ingestOnline);
@@ -248,12 +274,13 @@
   function setView(v: View): void {
     if (v === view) return;
     writeRoute({ view: v, query });
-    activate(v);
+    // Coming from home with no results yet: run the search the view needs
+    activate(v, { search: v !== 'home' && v !== 'map' && entities.length === 0, online: false });
   }
 
   function submitSearch(): void {
-    // Searching from the map shows results in the list
-    const target: View = view === 'map' ? 'list' : view;
+    // Searching from the map or home shows results in the list
+    const target: View = view === 'map' || view === 'home' ? 'list' : view;
     writeRoute({ view: target, query });
     activate(target, { search: true });
   }
@@ -336,11 +363,16 @@
     return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
   }
 
+  function focusSearch(): void {
+    const el = view === 'home' ? (document.getElementById('home-search') as HTMLInputElement | null) : searchInput;
+    el?.focus();
+    el?.select();
+  }
+
   function handleGlobalKey(e: KeyboardEvent): void {
     if ((e.key === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !isTyping(e.target))) {
       e.preventDefault();
-      searchInput?.focus();
-      searchInput?.select();
+      focusSearch();
       return;
     }
     if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey || articleEntity) return;
@@ -349,7 +381,6 @@
   }
 
   function handleSearchKey(e: KeyboardEvent): void {
-    if (e.key === 'Enter') submitSearch();
     if (e.key === 'Escape') searchInput.blur();
   }
 
@@ -360,7 +391,7 @@
     query = r.query;
     // Restored links only search the local cache: opening a URL must not
     // silently trigger outbound requests to external sources.
-    activate(r.view, { search: r.view !== 'map', online: false });
+    activate(r.view, { search: r.view !== 'map' && r.view !== 'home', online: false });
   }
 
   onMount(() => {
@@ -374,68 +405,103 @@
 
 <svelte:window on:keydown={handleGlobalKey} />
 
+<a class="skip-link" href="#main">Aller au contenu</a>
+
 <div class="app">
   <header class="topbar">
-    <a class="brand" href="#/list" on:click|preventDefault={() => searchFor('', { view: 'list' })}>
-      <span class="logo">🐓</span>
-      <span class="brand-text">
-        <span class="brand-name">Le Coq</span>
-        <span class="brand-sub">Renseignement géopolitique</span>
-      </span>
+    <a class="brand" href="#/" on:click|preventDefault={() => setView('home')} aria-label="Le Coq, accueil">
+      <Logo variant="compact" size={30} label="" />
     </a>
 
-    <div class="search">
-      <span class="search-icon" aria-hidden="true">⌕</span>
-      <input
-        bind:this={searchInput}
-        type="search"
-        bind:value={query}
-        on:keydown={handleSearchKey}
-        placeholder="Rechercher une entité, une organisation, un pays…"
-        aria-label="Recherche"
-      />
-      <kbd class="search-kbd" title="Raccourci clavier">Ctrl K</kbd>
+    <nav class="nav" aria-label="Vues">
+      {#each TABS as t}
+        <button
+          class="nav-item"
+          class:active={view === t.id}
+          aria-current={view === t.id ? 'page' : undefined}
+          title="{t.hint} (touche {t.key})"
+          on:click={() => setView(t.id)}
+        >
+          <Icon name={t.icon} size={16} />
+          <span>{t.label}</span>
+        </button>
+      {/each}
+    </nav>
+
+    <div class="topbar-end">
+      {#if view !== 'home'}
+        <form class="search" role="search" on:submit|preventDefault={submitSearch}>
+          <span class="search-icon"><Icon name="search" size={16} /></span>
+          <input
+            bind:this={searchInput}
+            type="search"
+            bind:value={query}
+            on:keydown={handleSearchKey}
+            placeholder="Rechercher une entité…"
+            aria-label="Recherche"
+          />
+          <kbd class="search-kbd">/</kbd>
+        </form>
+      {/if}
+
+      <span class="status" class:ok={healthOk === true} class:down={healthOk === false} title={healthText}>
+        <span class="status-label">{healthOk === null ? 'API…' : healthOk ? 'API en ligne' : 'API hors ligne'}</span>
+      </span>
+
+      <button
+        class="ghost icon"
+        on:click={toggleTheme}
+        aria-label={$theme === 'dark' ? 'Passer au thème clair' : 'Passer au thème sombre'}
+        title={$theme === 'dark' ? 'Thème clair' : 'Thème sombre'}
+      >
+        <Icon name={$theme === 'dark' ? 'sun' : 'moon'} size={18} />
+      </button>
     </div>
-
-    <label class="online" title="Interroger aussi les sources externes et ingérer les résultats">
-      <input type="checkbox" bind:checked={ingestOnline} />
-      <span>Sources externes</span>
-    </label>
-
-    <button on:click={submitSearch} disabled={loading}>
-      {searching ? 'Recherche…' : 'Rechercher'}
-    </button>
-
-    <span
-      class="health"
-      class:ok={healthOk === true}
-      class:down={healthOk === false}
-      title={healthText}
-    >
-      ● {healthOk === null ? '…' : healthOk ? 'API en ligne' : 'API hors ligne'}
-    </span>
   </header>
 
-  <nav class="tabs" aria-label="Vues">
-    {#each TABS as t}
+  {#if view === 'home'}
+    <main id="main" class="home-main">
+      <Home
+        bind:query
+        bind:ingestOnline
+        sources={allSources}
+        {healthOk}
+        on:search={(e) => searchFor(e.detail.query, { view: 'list' })}
+        on:navigate={(e) => setView(e.detail.view)}
+      />
+    </main>
+  {:else}
+    <div class="workspace">
       <button
-        class="tab"
-        class:active={view === t.id}
-        aria-current={view === t.id ? 'page' : undefined}
-        title="{t.hint} (touche {t.key})"
-        on:click={() => setView(t.id)}
+        class="secondary filters-toggle"
+        aria-expanded={filtersOpen}
+        aria-controls="filters"
+        on:click={() => (filtersOpen = !filtersOpen)}
       >
-        {t.label}
-        <kbd>{t.key}</kbd>
+        {filtersOpen ? 'Masquer les filtres' : 'Filtres et sources'}
+        {#if selectedSources.size && ingestOnline}<span class="badge">{selectedSources.size} sources</span>{/if}
       </button>
-    {/each}
-  </nav>
+      <aside class="sidebar" id="filters" class:open={filtersOpen} aria-label="Filtres">
+        <section class="side-block">
+          <div class="side-head">
+            <h2 class="eyebrow">Recherche</h2>
+          </div>
+          <label class="switch">
+            <input type="checkbox" bind:checked={ingestOnline} />
+            <span>Interroger les sources externes</span>
+          </label>
+          <button class="search-run" on:click={submitSearch} disabled={loading}>
+            {searching ? 'Recherche en cours…' : 'Lancer la recherche'}
+          </button>
+        </section>
 
-  <div class="body">
-    <aside class="sidebar">
-      <details open>
-        <summary>Sources externes</summary>
-        <div class="side-section" class:muted={!ingestOnline}>
+        <section class="side-block" class:muted={!ingestOnline}>
+          <div class="side-head">
+            <h2 class="eyebrow">Sources</h2>
+            <button class="ghost small" on:click={reloadPlugins} title="Recharger les plugins Python">
+              <Icon name="reload" size={14} /> Recharger
+            </button>
+          </div>
           {#if !ingestOnline}
             <p class="hint">Désactivées : seule la base locale est interrogée.</p>
           {/if}
@@ -454,134 +520,158 @@
               <p class="hint">Aucun plugin chargé.</p>
             {/each}
           </div>
-          <button class="ghost small reload" on:click={reloadPlugins} title="Recharger les plugins Python">
-            ↻ Recharger les plugins
-          </button>
+        </section>
+
+        {#if view === 'list' && typeCounts.length}
+          <section class="side-block">
+            <div class="side-head">
+              <h2 class="eyebrow">Types</h2>
+              {#if hiddenTypes.size}
+                <button class="ghost small" on:click={() => (hiddenTypes = new Set())}>Tout afficher</button>
+              {/if}
+            </div>
+            <div class="type-list">
+              {#each typeCounts as [t, n]}
+                <label class="type-row">
+                  <input type="checkbox" checked={!hiddenTypes.has(t)} on:change={() => toggleType(t)} />
+                  <span class="type-name">{t}</span>
+                  <span class="type-count mono">{n}</span>
+                </label>
+              {/each}
+            </div>
+          </section>
+        {/if}
+
+        <p class="shortcuts">
+          <kbd>/</kbd> rechercher · <kbd>0</kbd>–<kbd>4</kbd> vues · <kbd>Échap</kbd> fermer
+        </p>
+      </aside>
+
+      <main id="main" class="content">
+        <div class="messages" aria-live="polite">
+          {#if error}
+            <div class="alert error"><Icon name="alert" size={16} /><span>{error}</span></div>
+          {/if}
+          {#if searching}
+            <div class="alert info">
+              <Icon name="info" size={16} />
+              <span>
+                Interrogation de {selectedSources.size} source{selectedSources.size > 1 ? 's' : ''}
+                externe{selectedSources.size > 1 ? 's' : ''}… cela peut prendre jusqu'à 2 minutes.
+              </span>
+            </div>
+          {/if}
+          {#if searchErrors.length}
+            <div class="alert warn"><Icon name="alert" size={16} /><span>{searchErrors.join(' · ')}</span></div>
+          {/if}
+          {#if newItems > 0 && !error}
+            <div class="alert info">
+              <Icon name="info" size={16} />
+              <span>
+                {newItems} élément{newItems !== 1 ? 's' : ''} ingéré{newItems !== 1 ? 's' : ''} depuis les sources
+                externes
+              </span>
+            </div>
+          {/if}
         </div>
-      </details>
 
-      {#if view === 'list' && typeCounts.length}
-        <details open>
-          <summary>Types</summary>
-          <div class="side-section">
-            {#each typeCounts as [t, n]}
-              <label class="type-row">
-                <input type="checkbox" checked={!hiddenTypes.has(t)} on:change={() => toggleType(t)} />
-                <span class="type-name">{typeBadge(t)} {t}</span>
-                <span class="type-count">{n}</span>
-              </label>
-            {/each}
-            {#if hiddenTypes.size}
-              <button class="ghost small" on:click={() => (hiddenTypes = new Set())}>Tout afficher</button>
-            {/if}
-          </div>
-        </details>
-      {/if}
-
-      <div class="shortcuts">
-        <kbd>/</kbd> rechercher · <kbd>1</kbd>–<kbd>4</kbd> vues · <kbd>Échap</kbd> fermer
-      </div>
-    </aside>
-
-    <main class="content">
-      <div class="messages" aria-live="polite">
-        {#if error}
-          <div class="alert error">{error}</div>
-        {/if}
-        {#if searching}
-          <div class="alert info">
-            Interrogation de {selectedSources.size} source{selectedSources.size > 1 ? 's' : ''} externe{selectedSources.size > 1 ? 's' : ''}…
-            cela peut prendre jusqu'à 2 minutes.
-          </div>
-        {/if}
-        {#if searchErrors.length}
-          <div class="alert warn">⚠️ {searchErrors.join(' · ')}</div>
-        {/if}
-        {#if newItems > 0 && !error}
-          <div class="alert info">
-            {newItems} élément{newItems !== 1 ? 's' : ''} ingéré{newItems !== 1 ? 's' : ''} depuis les sources externes
-          </div>
-        {/if}
-      </div>
-
-      {#if view === 'list'}
-        <ListView
-          entities={visibleEntities}
-          {loading}
-          {query}
-          filtered={hiddenTypes.size > 0 && entities.length > 0}
-          on:openArticle={(e) => (articleEntity = e.detail)}
-          on:suggest={(e) => searchFor(e.detail.query, { online: true })}
-          on:clearFilters={() => (hiddenTypes = new Set())}
-        />
-      {:else if view === 'map'}
-        <MapView bind:this={mapView} entities={mapEntities} on:countrySelected={(e) => (mapInfo = e.detail)} />
-
-        {#if mapInfo}
-          <aside class="country-panel panel">
-            <div class="country-head">
-              <h3>🌍 {mapInfo.name}</h3>
-              <button class="ghost icon" on:click={() => (mapInfo = null)} aria-label="Fermer">×</button>
-            </div>
-            <p class="country-meta">
-              {mapInfo.entities.length > 0
-                ? `${mapInfo.entities.length} entité${mapInfo.entities.length > 1 ? 's' : ''} dans la base`
-                : 'Aucune entité dans la base'}
-            </p>
-            {#if mapInfo.entities.length > 0}
-              <ul class="country-list">
-                {#each mapInfo.entities.slice(0, 30) as e (e.id)}
-                  <li>
-                    <button class="country-item" on:click={() => (articleEntity = e)}>
-                      <span class="badge">{typeOf(e)}</span>
-                      <span class="country-item-name">{e.name}</span>
-                    </button>
-                  </li>
-                {/each}
-                {#if mapInfo.entities.length > 30}
-                  <li class="dim">… et {mapInfo.entities.length - 30} autres</li>
-                {/if}
-              </ul>
-            {/if}
-            <div class="country-actions">
-              <button class="secondary small" on:click={() => mapInfo && searchFor(mapInfo.name)}>
-                Rechercher « {mapInfo.name} »
-              </button>
-              <button class="secondary small" on:click={() => mapInfo && searchFor(mapInfo.name, { online: true })}>
-                🌐 Chercher en ligne
-              </button>
-            </div>
-          </aside>
-        {/if}
-      {:else}
-        {#key view}
-          <GraphView
-            bind:this={graphView}
-            entities={graphEntities}
-            relationships={graphRels}
-            {focusHubId}
-            truncated={graphTruncated}
-            scopeLabel={graphScope}
-            initialLayout={view === 'focus' ? 'concentric' : 'cose'}
-            on:exploreFromNode={handleExploreFromNode}
-            on:enrichFromNode={handleEnrichFromNode}
+        {#if view === 'list'}
+          <ListView
+            entities={visibleEntities}
+            {loading}
+            {query}
+            filtered={hiddenTypes.size > 0 && entities.length > 0}
+            on:openArticle={(e) => (articleEntity = e.detail)}
+            on:suggest={(e) => searchFor(e.detail.query, { online: true })}
+            on:clearFilters={() => (hiddenTypes = new Set())}
           />
-        {/key}
-      {/if}
-    </main>
-  </div>
+        {:else if view === 'map'}
+          <MapView bind:this={mapView} entities={mapEntities} on:countrySelected={(e) => (mapInfo = e.detail)} />
+
+          {#if mapInfo}
+            <aside class="country-panel panel" aria-label="Pays sélectionné">
+              <div class="country-head">
+                <h3>{mapInfo.name}</h3>
+                <button class="ghost icon" on:click={() => (mapInfo = null)} aria-label="Fermer">
+                  <Icon name="close" size={16} />
+                </button>
+              </div>
+              <p class="country-meta">
+                {mapInfo.entities.length > 0
+                  ? `${mapInfo.entities.length} entité${mapInfo.entities.length > 1 ? 's' : ''} dans la base`
+                  : 'Aucune entité dans la base'}
+              </p>
+              {#if mapInfo.entities.length > 0}
+                <ul class="country-list">
+                  {#each mapInfo.entities.slice(0, 30) as e (e.id)}
+                    <li>
+                      <button class="country-item" on:click={() => (articleEntity = e)}>
+                        <span class="country-item-name">{e.name}</span>
+                        <span class="badge">{typeOf(e)}</span>
+                      </button>
+                    </li>
+                  {/each}
+                  {#if mapInfo.entities.length > 30}
+                    <li class="dim">… et {mapInfo.entities.length - 30} autres</li>
+                  {/if}
+                </ul>
+              {/if}
+              <div class="country-actions">
+                <button class="secondary small" on:click={() => mapInfo && searchFor(mapInfo.name)}>
+                  Rechercher « {mapInfo.name} »
+                </button>
+                <button class="secondary small" on:click={() => mapInfo && searchFor(mapInfo.name, { online: true })}>
+                  Chercher en ligne
+                </button>
+              </div>
+            </aside>
+          {/if}
+        {:else}
+          {#key view}
+            <GraphView
+              bind:this={graphView}
+              entities={graphEntities}
+              relationships={graphRels}
+              {focusHubId}
+              truncated={graphTruncated}
+              scopeLabel={graphScope}
+              initialLayout={view === 'focus' ? 'concentric' : 'cose'}
+              on:exploreFromNode={handleExploreFromNode}
+              on:enrichFromNode={handleEnrichFromNode}
+            />
+          {/key}
+        {/if}
+      </main>
+    </div>
+  {/if}
 </div>
 
 <ArticleDrawer entity={articleEntity} on:close={() => (articleEntity = null)} on:openInFocus={handleOpenInFocus} />
 
 <style>
+  .skip-link {
+    position: absolute;
+    left: 1rem;
+    top: -3rem;
+    z-index: 100;
+    background: var(--brand);
+    color: var(--on-brand);
+    padding: 0.5rem 0.75rem;
+    border-radius: var(--radius);
+    text-decoration: none;
+  }
+
+  .skip-link:focus {
+    top: 0.75rem;
+  }
+
   .app {
     min-height: 100vh;
     display: flex;
     flex-direction: column;
   }
 
-  /* ---------- Top bar ---------- */
+  /* ---------- Top navigation ---------- */
 
   .topbar {
     position: sticky;
@@ -589,65 +679,76 @@
     z-index: 20;
     display: flex;
     align-items: center;
-    gap: 0.75rem;
-    min-height: var(--topbar-h);
-    padding: 0.6rem 1.25rem;
-    background: rgba(10, 10, 15, 0.85);
-    backdrop-filter: blur(20px) saturate(180%);
+    gap: 1.25rem;
+    height: var(--topbar-h);
+    padding: 0 1.25rem;
+    background: var(--surface-overlay);
+    backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--border);
   }
 
   .brand {
     display: flex;
     align-items: center;
-    gap: 0.55rem;
-    text-decoration: none;
     color: inherit;
-    margin-right: 0.5rem;
+    text-decoration: none;
+    border-radius: var(--radius);
   }
 
-  .logo {
-    font-size: 1.6rem;
-  }
-
-  .brand-text {
+  .nav {
     display: flex;
-    flex-direction: column;
-    line-height: 1.15;
+    align-items: stretch;
+    align-self: stretch;
+    gap: 0.25rem;
   }
 
-  .brand-name {
-    font-weight: 700;
-    font-size: 1.05rem;
-    background: linear-gradient(135deg, #fff, var(--teal-light));
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    background: none;
+    color: var(--text-2);
+    font-weight: 500;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 0 0.7rem;
   }
 
-  .brand-sub {
-    font-size: 0.72rem;
-    color: var(--text-dimmer);
+  .nav-item:hover:not(:disabled) {
+    background: none;
+    color: var(--text);
+  }
+
+  .nav-item.active {
+    color: var(--text);
+    border-bottom-color: var(--brand-text);
+  }
+
+  .topbar-end {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
   }
 
   .search {
     position: relative;
-    flex: 1;
-    max-width: 640px;
     display: flex;
     align-items: center;
+    width: clamp(200px, 26vw, 360px);
   }
 
   .search input {
     width: 100%;
-    padding-left: 2rem;
-    padding-right: 4rem;
+    padding-left: 2.1rem;
+    padding-right: 2rem;
   }
 
   .search-icon {
     position: absolute;
     left: 0.7rem;
-    color: var(--text-dimmer);
+    color: var(--text-3);
     pointer-events: none;
   }
 
@@ -657,131 +758,78 @@
     pointer-events: none;
   }
 
-  .online {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.82rem;
-    color: var(--text-dim);
-    cursor: pointer;
-    user-select: none;
-    white-space: nowrap;
+  /* ---------- Workspace: sidebar + content ---------- */
+
+  .home-main {
+    flex: 1;
   }
 
-  .health {
-    margin-left: auto;
-    font-size: 0.78rem;
-    padding: 0.25rem 0.65rem;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    color: var(--text-dim);
-    white-space: nowrap;
-  }
-
-  .health.ok {
-    color: var(--teal);
-    background: rgba(45, 212, 191, 0.08);
-    border-color: rgba(45, 212, 191, 0.25);
-  }
-
-  .health.down {
-    color: var(--danger);
-    background: var(--danger-soft);
-    border-color: rgba(239, 68, 68, 0.3);
-  }
-
-  /* ---------- Tabs ---------- */
-
-  .tabs {
-    display: flex;
-    gap: 0.25rem;
-    padding: 0 1.25rem;
-    border-bottom: 1px solid var(--border);
-    overflow-x: auto;
-  }
-
-  .tab {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    background: none;
-    color: var(--text-dim);
-    font-weight: 500;
-    border: none;
-    border-bottom: 2px solid transparent;
-    border-radius: 0;
-    padding: 0.7rem 0.9rem;
-  }
-
-  .tab:hover:not(:disabled) {
-    background: none;
-    color: var(--text);
-  }
-
-  .tab.active {
-    color: var(--teal);
-    border-bottom-color: var(--teal);
-  }
-
-  /* ---------- Body: sidebar + content ---------- */
-
-  .body {
+  .workspace {
     flex: 1;
     display: grid;
+    /* Rows keep their natural height even when the page is shorter than the screen */
+    align-content: start;
     grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
-    gap: 1.25rem;
-    padding: 1.25rem;
+    width: 100%;
+    max-width: var(--content-max);
+    margin: 0 auto;
+  }
+
+  .filters-toggle {
+    display: none;
   }
 
   .sidebar {
     position: sticky;
-    top: calc(var(--topbar-h) + 1rem);
+    top: var(--topbar-h);
     align-self: start;
+    max-height: calc(100vh - var(--topbar-h));
+    overflow-y: auto;
+    padding: 1.25rem 1rem;
+    border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: 1.5rem;
   }
 
-  .sidebar details {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-  }
-
-  .sidebar summary {
-    cursor: pointer;
-    padding: 0.6rem 0.85rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text-dim);
-    list-style: none;
-  }
-
-  .sidebar summary::-webkit-details-marker {
-    display: none;
-  }
-
-  .sidebar summary::after {
-    content: '▾';
-    float: right;
-    transition: transform 0.15s;
-  }
-
-  .sidebar details:not([open]) summary::after {
-    transform: rotate(-90deg);
-  }
-
-  .side-section {
-    padding: 0 0.85rem 0.85rem;
+  .side-block {
     display: flex;
     flex-direction: column;
+    gap: 0.6rem;
+  }
+
+  .side-block.muted .chips {
+    opacity: 0.5;
+  }
+
+  .side-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 26px;
+  }
+
+  .side-head h2 {
+    margin: 0;
+  }
+
+  .side-head button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+
+  .switch {
+    display: flex;
+    align-items: center;
     gap: 0.5rem;
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    cursor: pointer;
   }
 
-  .side-section.muted .chips {
-    opacity: 0.55;
+  .search-run {
+    width: 100%;
   }
 
   .chips {
@@ -792,20 +840,27 @@
 
   .hint {
     margin: 0;
-    font-size: 0.78rem;
-    color: var(--text-dimmer);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
   }
 
-  .reload {
-    align-self: flex-start;
+  .type-list {
+    display: flex;
+    flex-direction: column;
   }
 
   .type-row {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    font-size: 0.85rem;
+    gap: 0.55rem;
+    padding: 0.3rem 0.35rem;
+    border-radius: var(--radius-sm);
+    font-size: var(--fs-sm);
     cursor: pointer;
+  }
+
+  .type-row:hover {
+    background: var(--surface-2);
   }
 
   .type-name {
@@ -816,19 +871,19 @@
   }
 
   .type-count {
-    color: var(--text-dimmer);
-    font-variant-numeric: tabular-nums;
+    color: var(--text-3);
   }
 
   .shortcuts {
-    font-size: 0.72rem;
-    color: var(--text-dimmer);
-    padding: 0 0.25rem;
-    line-height: 1.9;
+    margin: 0;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    line-height: 2;
   }
 
   .content {
     min-width: 0;
+    padding: 1.25rem 1.5rem 2rem;
   }
 
   .messages {
@@ -842,19 +897,22 @@
     display: none;
   }
 
+  .alert :global(svg) {
+    margin-top: 0.1rem;
+  }
+
   /* ---------- Map country panel ---------- */
 
   .country-panel {
     position: fixed;
     right: 1.25rem;
-    top: calc(var(--topbar-h) + 4rem);
+    top: calc(var(--topbar-h) + 1.25rem);
     width: 340px;
-    max-height: calc(100vh - var(--topbar-h) - 6rem);
+    max-height: calc(100vh - var(--topbar-h) - 2.5rem);
     overflow-y: auto;
     padding: 1rem 1.1rem;
     z-index: 30;
-    background: rgba(10, 10, 15, 0.96);
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+    box-shadow: var(--shadow);
   }
 
   .country-head {
@@ -865,12 +923,12 @@
 
   .country-head h3 {
     margin: 0;
-    font-size: 1.05rem;
+    font-size: var(--fs-lg);
   }
 
   .country-meta {
-    color: var(--text-dim);
-    font-size: 0.85rem;
+    color: var(--text-2);
+    font-size: var(--fs-sm);
     margin: 0.25rem 0 0.75rem;
   }
 
@@ -883,6 +941,7 @@
   .country-item {
     display: flex;
     align-items: center;
+    justify-content: space-between;
     gap: 0.5rem;
     width: 100%;
     text-align: left;
@@ -890,26 +949,21 @@
     background: none;
     color: var(--text);
     font-weight: 400;
-    font-size: 0.85rem;
+    font-size: var(--fs-sm);
     border: none;
     border-bottom: 1px solid var(--border);
     border-radius: 0;
-    padding: 0.4rem 0.25rem;
+    padding: 0.45rem 0.25rem;
   }
 
   .country-item:hover:not(:disabled) {
-    background: var(--surface-hover);
-  }
-
-  .country-item-name {
-    flex: 1;
+    background: var(--surface-2);
   }
 
   .dim {
-    color: var(--text-dimmer);
-    font-style: italic;
-    font-size: 0.82rem;
-    padding: 0.4rem 0.25rem;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    padding: 0.45rem 0.25rem;
   }
 
   .country-actions {
@@ -922,40 +976,101 @@
 
   /* ---------- Responsive ---------- */
 
-  @media (max-width: 1000px) {
-    .brand-sub,
-    .search-kbd {
+  @media (max-width: 1100px) {
+    .status-label {
+      display: none;
+    }
+    .search {
+      width: clamp(160px, 22vw, 260px);
+    }
+  }
+
+  @media (max-width: 900px) {
+    .nav-item span {
+      display: none;
+    }
+    .nav-item {
+      padding: 0 0.6rem;
+    }
+  }
+
+  @media (max-width: 480px) {
+    /* Five tabs must fit a phone width: drop the icons, keep the words */
+    .nav-item :global(svg) {
       display: none;
     }
   }
 
   @media (max-width: 820px) {
     .topbar {
+      height: auto;
       flex-wrap: wrap;
-      padding: 0.6rem 0.75rem;
+      gap: 0.5rem 0.75rem;
+      padding: 0.5rem 0.75rem 0;
+    }
+
+    .nav {
+      order: 3;
+      width: 100%;
+      overflow-x: auto;
+      height: 44px;
+      justify-content: space-between;
+    }
+
+    .nav-item {
+      padding: 0 0.45rem;
+      font-size: var(--fs-sm);
+    }
+
+    .nav-item span {
+      display: inline;
     }
 
     .search {
-      order: 10;
-      flex-basis: 100%;
-      max-width: none;
+      width: auto;
+      flex: 1;
     }
 
-    .tabs {
-      padding: 0 0.75rem;
+    .search-kbd {
+      display: none;
     }
 
-    .body {
+    .topbar-end {
+      flex: 1;
+      justify-content: flex-end;
+    }
+
+    .workspace {
       grid-template-columns: 1fr;
-      padding: 0.75rem;
+    }
+
+    .filters-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin: 0.75rem 0.75rem 0;
     }
 
     .sidebar {
+      display: none;
       position: static;
+      max-height: none;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+      gap: 1rem;
+      padding: 1rem 0.75rem;
+    }
+
+    .sidebar.open {
+      display: flex;
     }
 
     .shortcuts {
       display: none;
+    }
+
+    .content {
+      padding: 1rem 0.75rem 2rem;
     }
 
     .country-panel {

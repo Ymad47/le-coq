@@ -67,7 +67,7 @@ export interface ArticleRelation {
   outgoing: boolean;
 }
 
-export type View = 'list' | 'graph' | 'focus' | 'map';
+export type View = 'home' | 'list' | 'graph' | 'focus' | 'map';
 
 export interface Neighborhood {
   seeds: string[];

@@ -3,7 +3,9 @@
   import { createEventDispatcher } from 'svelte';
   import cytoscape from 'cytoscape';
   import type { Entity, Relationship, GraphNode } from '../lib/types';
-  import { colorForType, colorForEdge, extractYear, stripSourcePrefix } from '../lib/utils';
+  import { extractYear, stripSourcePrefix } from '../lib/utils';
+  import { vizPalette } from '../lib/tokens';
+  import Icon from './Icon.svelte';
 
   export let entities: Entity[] = [];
   export let relationships: Relationship[] = [];
@@ -55,81 +57,6 @@
         // network fail: keep Q-code labels
       }
     }
-  }
-
-  function stableRandom(str: string): number {
-    let h = 2166136261;
-    for (let i = 0; i < str.length; i++) {
-      h ^= str.charCodeAt(i);
-      h = Math.imul(h, 16777619);
-    }
-    return ((h >>> 0) % 1000) / 1000;
-  }
-
-  function hslToHex(h: number, s: number, l: number): string {
-    const c = (1 - Math.abs(2 * l - 1)) * s;
-    const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
-    const m = l - c / 2;
-    let r = 0, g = 0, b = 0;
-    if (h < 60) { r = c; g = x; b = 0; }
-    else if (h < 120) { r = x; g = c; b = 0; }
-    else if (h < 180) { r = 0; g = c; b = x; }
-    else if (h < 240) { r = 0; g = x; b = c; }
-    else if (h < 300) { r = x; g = 0; b = c; }
-    else { r = c; g = 0; b = x; }
-    const c2 = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
-    return `#${c2(r)}${c2(g)}${c2(b)}`;
-  }
-
-  function assignClusterColors(
-    nodes: any[],
-    edges: any[],
-    deg: Map<string, number>,
-    _maxDegree: number,
-    topRatio = 0.08
-  ): { color: Map<string, string>; hubIds: Set<string> } {
-    const sorted = [...nodes].sort((a, b) => (deg.get(b.data.id) ?? 0) - (deg.get(a.data.id) ?? 0));
-    const hubCount = Math.max(3, Math.ceil(nodes.length * topRatio));
-    const hubs = sorted.filter((n) => (deg.get(n.data.id) ?? 0) > 0).slice(0, hubCount);
-
-    const color = new Map<string, string>();
-    const hubHue = new Map<string, number>();
-
-    hubs.forEach((hub, i) => {
-      const base = stableRandom(hub.data.id) * 360;
-      const hue = Math.round((base + i * 137.508) % 360);
-      hubHue.set(hub.data.id, hue);
-      color.set(hub.data.id, hslToHex(hue, 0.75, 0.55));
-    });
-
-    const adj = new Map<string, string[]>();
-    const push = (a: string, b: string) => {
-      if (!adj.has(a)) adj.set(a, []);
-      adj.get(a)!.push(b);
-    };
-    edges.forEach((e) => {
-      push(e.data.source, e.data.target);
-      push(e.data.target, e.data.source);
-    });
-
-    const queue = hubs.map((h) => ({ id: h.data.id, depth: 0, hue: hubHue.get(h.data.id)! }));
-    const visited = new Set(hubs.map((h) => h.data.id));
-    while (queue.length) {
-      const { id, depth, hue } = queue.shift()!;
-      color.set(id, hslToHex(hue, Math.max(0.25, 0.7 - depth * 0.14), Math.max(0.35, 0.62 - depth * 0.07)));
-      for (const nb of adj.get(id) ?? []) {
-        if (!visited.has(nb)) {
-          visited.add(nb);
-          queue.push({ id: nb, depth: depth + 1, hue });
-        }
-      }
-    }
-
-    nodes.forEach((n) => {
-      if (!color.has(n.data.id)) color.set(n.data.id, '#2d3748');
-    });
-
-    return { color, hubIds: new Set(hubs.map((h) => h.data.id)) };
   }
 
   export async function renderGraph(): Promise<void> {
@@ -224,14 +151,21 @@
       ? nodes
       : nodes.filter((n) => (deg.get(n.data.id) ?? 0) > 0 || n.data.id === focusHubId);
 
-    const { color: clusterColor, hubIds } = assignClusterColors(visibleNodes, filteredEdges, deg, maxDegree);
+    // Restrained palette: the most connected nodes in brand blue, the rest neutral
+    const palette = vizPalette();
+    const ranked = [...visibleNodes]
+      .filter((n) => (deg.get(n.data.id) ?? 0) > 0)
+      .sort((a, b) => (deg.get(b.data.id) ?? 0) - (deg.get(a.data.id) ?? 0));
+    const hubIds = new Set(
+      ranked.slice(0, Math.max(3, Math.ceil(visibleNodes.length * 0.08))).map((n) => n.data.id)
+    );
 
     visibleNodes.forEach((n) => {
       const d = deg.get(n.data.id) ?? 0;
       n.data.degree = d;
       const ratio = maxDegree > 0 ? d / maxDegree : 0;
       n.data.size = Math.min(24 + 46 * ratio * ratio, 70);
-      n.data.color = clusterColor.get(n.data.id);
+      n.data.color = stubIds.has(n.data.id) ? palette.nodeStub : hubIds.has(n.data.id) ? palette.nodeHub : palette.node;
       n.data.hot = hubIds.has(n.data.id) ? 'true' : 'false';
     });
 
@@ -259,80 +193,79 @@
 
     cy = cytoscape({
       container: graphEl,
+      // fit() must not blow a small graph up to giant nodes and labels
+      maxZoom: 1.6,
+      minZoom: 0.15,
       elements: [...visibleNodes, ...filteredEdges],
       style: [
         {
           selector: 'node',
           style: {
             label: 'data(label)',
-            'background-color': (ele: any) => ele.data('color') ?? colorForType(ele.data('type')),
-            color: 'rgba(255,255,255,0.9)',
+            'background-color': 'data(color)',
+            color: palette.label,
+            'font-family': 'Inter Variable, Inter, system-ui, sans-serif',
             'font-size': 10,
             'font-weight': 500,
             'text-valign': 'bottom',
             'text-margin-y': 4,
             'text-wrap': 'ellipsis',
-            'text-max-width': '80px',
+            'text-max-width': '90px',
             width: 'data(size)',
             height: 'data(size)',
             'border-width': 0,
-            'border-color': 'rgba(255,255,255,0.25)',
           },
         },
         {
           selector: 'node[placeholder = "true"]',
           style: {
-            'background-color': '#4a5568',
-            'border-width': 2,
+            'border-width': 1.5,
             'border-style': 'dashed',
-            'border-color': '#718096',
-            opacity: 0.7,
+            'border-color': palette.nodeStub,
+            'background-opacity': 0.5,
           },
         },
         {
           selector: 'node[hot = "true"]',
           style: {
-            'border-width': 3,
-            'border-color': '#2dd4bf',
-            'border-opacity': 0.9,
+            'border-width': 2,
+            'border-color': palette.surface,
           },
         },
         {
           selector: 'node:selected',
           style: {
             'border-width': 3,
-            'border-color': 'rgba(255,255,255,0.25)',
-            'overlay-color': '#2dd4bf',
-            'overlay-opacity': 0.15,
-          },
-        },
-        {
-          selector: 'node:active',
-          style: {
-            'overlay-color': '#2dd4bf',
-            'overlay-opacity': 0.25,
+            'border-color': palette.brandText,
           },
         },
         {
           selector: 'edge',
           style: {
-            label: showEdgeLabel ? 'data(label)' : '',
-            'line-color': (ele: any) => colorForEdge(ele.data('relType')),
-            'target-arrow-color': (ele: any) => colorForEdge(ele.data('relType')),
+            // Generic links (related_to, mentions) carry no extra information: no label
+            label: (ele: any) =>
+              showEdgeLabel && !WEAK_REL_TYPES.has((ele.data('relType') ?? '').toLowerCase())
+                ? ele.data('label')
+                : '',
+            'line-color': (ele: any) =>
+              WEAK_REL_TYPES.has((ele.data('relType') ?? '').toLowerCase()) ? palette.edge : palette.edgeStrong,
+            'target-arrow-color': (ele: any) =>
+              WEAK_REL_TYPES.has((ele.data('relType') ?? '').toLowerCase()) ? palette.edge : palette.edgeStrong,
             'target-arrow-shape': 'triangle',
+            'arrow-scale': 0.8,
             'curve-style': 'bezier',
+            'font-family': 'ui-monospace, SF Mono, monospace',
             'font-size': 8,
-            color: 'rgba(255,255,255,0.5)',
-            width: (ele: any) => (ele.data('relType') === 'parent_of' ? 2.5 : 1.5),
-            opacity: 0.85,
+            color: palette.text2,
+            'text-background-color': palette.surface,
+            'text-background-opacity': 0.85,
+            'text-background-padding': '2px',
+            width: 1.2,
           },
         },
         {
           selector: 'edge:selected',
-          style: {
-            width: 4,
-            opacity: 1,
-          },
+          style: { width: 3 },
         },
       ],
       layout: layoutOpts,
@@ -398,17 +331,17 @@
 
 <div class="view-toolbar">
   <span class="stats">
-    {nodeCount} nœuds · {edgeCount} arêtes{scopeLabel ? ` · ${scopeLabel}` : ''}
+    <strong class="num">{nodeCount}</strong> nœuds · <span class="num">{edgeCount}</span> liens{scopeLabel ? ` · ${scopeLabel}` : ''}
     {#if truncated}<span class="truncated" title="Le backend a plafonné le nombre de relations renvoyées">· tronqué</span>{/if}
   </span>
-  <button class="secondary small" on:click={() => { showIsolated = !showIsolated; renderGraph(); }}>
-    {showIsolated ? '👁️ Masquer orphelins' : '👁️‍🗨️ Tout afficher'}
+  <button class="secondary small" aria-pressed={showIsolated} on:click={() => { showIsolated = !showIsolated; renderGraph(); }}>
+    {showIsolated ? 'Masquer les isolés' : 'Afficher les isolés'}
   </button>
-  <button class="secondary small" on:click={() => { hideWeakLinks = !hideWeakLinks; renderGraph(); }}>
-    {hideWeakLinks ? '🔗 Liens forts' : '🔗 Tous liens'}
+  <button class="secondary small" aria-pressed={!hideWeakLinks} on:click={() => { hideWeakLinks = !hideWeakLinks; renderGraph(); }}>
+    {hideWeakLinks ? 'Liens forts uniquement' : 'Tous les liens'}
   </button>
-  <span class="year-slider" title="Afficher uniquement les données jusqu'à {maxYear}">
-    <span class="year-label">📅 {maxYear}</span>
+  <label class="year-slider" title="Afficher uniquement les relations datées jusqu'à {maxYear}">
+    <span class="year-label">Jusqu'à <span class="mono">{maxYear}</span></span>
     <input
       type="range"
       min={MIN_YEAR}
@@ -416,95 +349,92 @@
       bind:value={maxYear}
       on:input={renderGraph}
     />
-  </span>
-  <select bind:value={graphLayout} on:change={renderGraph}>
-    <option value="cose">cose</option>
-    <option value="breadthfirst">hiérarchie</option>
-    <option value="concentric">concentrique</option>
-    <option value="circle">cercle</option>
+  </label>
+  <select bind:value={graphLayout} on:change={renderGraph} aria-label="Disposition du graphe">
+    <option value="cose">Force</option>
+    <option value="breadthfirst">Hiérarchie</option>
+    <option value="concentric">Concentrique</option>
+    <option value="circle">Cercle</option>
   </select>
-  <button class="secondary small" on:click={() => cy?.fit(undefined, 30)}>⟲ Recentrer</button>
+  <button class="ghost icon" title="Recentrer" aria-label="Recentrer le graphe" on:click={() => cy?.fit(undefined, 30)}>
+    <Icon name="expand" size={16} />
+  </button>
 </div>
 
 <div class="graph-container">
-  <div class="graph-wrap" bind:this={graphEl}></div>
+  <div class="graph-wrap" bind:this={graphEl} role="img" aria-label="Graphe des relations entre entités"></div>
   {#if selectedNode}
-    <aside class="node-panel">
+    <aside class="node-panel panel" aria-label="Nœud sélectionné">
       <div class="panel-head">
         <h3>{selectedNode.label ?? selectedNode.id ?? 'Entité'}</h3>
-        <button class="ghost icon" aria-label="Fermer" on:click={() => { selectedNode = null; dispatch('nodeCleared'); cy?.elements().removeClass('dim'); }}>×</button>
+        <button class="ghost icon" aria-label="Fermer" on:click={() => { selectedNode = null; dispatch('nodeCleared'); cy?.elements().removeClass('dim'); }}>
+          <Icon name="close" size={16} />
+        </button>
       </div>
-      <div class="panel-body">
-        <div class="kv"><span class="k">Type</span><span class="v badge">{selectedNode.type}</span></div>
-        {#if selectedNode.country}<div class="kv"><span class="k">Pays</span><span class="v">{selectedNode.country}</span></div>{/if}
-        {#if selectedNode.source}<div class="kv"><span class="k">Source</span><span class="v src-badge">{selectedNode.source}</span></div>{/if}
-        <div class="kv"><span class="k">Connexions</span><span class="v">{selectedNode.degree}</span></div>
-        {#if selectedNode.description}
-          <p class="desc">{selectedNode.description.slice(0, 280)}{selectedNode.description.length > 280 ? '…' : ''}</p>
-        {/if}
-        <div class="panel-actions">
-          <button class="secondary small" on:click={handleExploreFromNode}>
-            🔎 Explorer depuis ce nœud
+      <dl class="kv-list">
+        <div class="kv"><dt>Type</dt><dd><span class="badge">{selectedNode.type}</span></dd></div>
+        {#if selectedNode.country}<div class="kv"><dt>Pays</dt><dd>{selectedNode.country}</dd></div>{/if}
+        {#if selectedNode.source}<div class="kv"><dt>Source</dt><dd class="mono">{selectedNode.source}</dd></div>{/if}
+        <div class="kv"><dt>Connexions</dt><dd class="mono">{selectedNode.degree}</dd></div>
+        <div class="kv"><dt>Identifiant</dt><dd class="mono id">{selectedNode.id}</dd></div>
+      </dl>
+      {#if selectedNode.description}
+        <p class="desc">{selectedNode.description.slice(0, 280)}{selectedNode.description.length > 280 ? '…' : ''}</p>
+      {/if}
+      <div class="panel-actions">
+        <button class="secondary small" on:click={handleExploreFromNode}>
+          <Icon name="search" size={14} /> Explorer depuis ce nœud
+        </button>
+        {#if selectedNode.placeholder === 'true' || selectedNode.type === 'stub'}
+          <button class="secondary small" on:click={handleEnrichFromNode}>
+            <Icon name="globe" size={14} /> Enrichir ce nœud en ligne
           </button>
-          {#if selectedNode.placeholder === 'true' || selectedNode.type === 'stub'}
-            <button class="secondary small enrich" on:click={handleEnrichFromNode}>
-              ⬆️ Enrichir ce stub
-            </button>
-          {/if}
-        </div>
+        {/if}
       </div>
     </aside>
   {/if}
 </div>
 
 <style>
-
-
   .year-slider {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-  }
-
-  .year-label {
-    color: #94a3b8;
-    font-size: 0.85rem;
-    min-width: 60px;
+    font-size: var(--fs-xs);
+    color: var(--text-2);
   }
 
   .year-slider input[type='range'] {
-    width: 130px;
-  }
-
-
-  .graph-container {
-    display: flex;
-    gap: 1rem;
-    align-items: flex-start;
+    width: 120px;
   }
 
   .truncated {
-    color: var(--warn);
+    color: var(--warning);
+    font-weight: 600;
+  }
+
+  .graph-container {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
   }
 
   .graph-wrap {
     flex: 1;
-    height: calc(100vh - 230px);
-    min-height: 400px;
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 16px;
-    backdrop-filter: blur(20px);
+    min-width: 0;
+    height: calc(100vh - var(--topbar-h) - 140px);
+    min-height: 420px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
   }
 
   .node-panel {
-    width: 320px;
-    background: rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(20px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 16px;
-    padding: 1.25rem;
-    max-height: 70vh;
+    width: 300px;
+    flex-shrink: 0;
+    padding: 1rem;
+    max-height: calc(100vh - var(--topbar-h) - 140px);
     overflow-y: auto;
   }
 
@@ -512,45 +442,45 @@
     display: flex;
     justify-content: space-between;
     align-items: flex-start;
-    margin-bottom: 1rem;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
   }
 
   .panel-head h3 {
-    font-size: 1rem;
-    color: #e2e8f0;
     margin: 0;
-    flex: 1;
+    font-size: var(--fs-md);
+    font-weight: 650;
   }
 
-
-
-  .panel-body {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
+  .kv-list {
+    margin: 0;
   }
 
   .kv {
     display: flex;
     justify-content: space-between;
-    font-size: 0.85rem;
+    gap: 1rem;
+    padding: 0.4rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-sm);
   }
 
-  .kv .k {
-    color: #94a3b8;
+  .kv dt {
+    color: var(--text-2);
   }
 
-  .kv .v {
-    color: #e2e8f0;
+  .kv dd {
+    margin: 0;
     text-align: right;
-    max-width: 60%;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .desc {
-    color: #94a3b8;
-    font-size: 0.85rem;
-    line-height: 1.5;
-    margin: 0.5rem 0;
+    color: var(--text-2);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+    margin: 0.75rem 0 0;
   }
 
   .panel-actions {
@@ -560,4 +490,27 @@
     margin-top: 1rem;
   }
 
+  .panel-actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+  }
+
+  @media (max-width: 820px) {
+    .graph-container {
+      flex-direction: column;
+    }
+
+    .graph-wrap {
+      width: 100%;
+      height: 60vh;
+      min-height: 320px;
+    }
+
+    .node-panel {
+      width: 100%;
+      max-height: none;
+    }
+  }
 </style>

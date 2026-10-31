@@ -1,7 +1,8 @@
 <script lang="ts">
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import type { Entity, ArticleRelation } from '../lib/types';
-  import { typeBadge, stripSourcePrefix } from '../lib/utils';
+  import { stripSourcePrefix } from '../lib/utils';
+  import Icon from './Icon.svelte';
   import { getEntitySummary, getNeighborhood } from '../lib/api';
 
   export let entity: Entity | null = null;
@@ -86,23 +87,22 @@
     tabindex="-1"
   ></div>
   <aside class="article-drawer" role="dialog" aria-modal="true" aria-label="Détail de l'entité" data-id={entity.id}>
-    <button class="close-drawer" type="button" on:click={(e) => { e.stopPropagation(); close(); }} aria-label="Fermer">
-      ×
+    <button class="ghost icon close-drawer" type="button" on:click={(e) => { e.stopPropagation(); close(); }} aria-label="Fermer">
+      <Icon name="close" size={18} />
     </button>
 
     <div class="drawer-head">
-      <span class="badge">
-        {typeBadge(entity.entity_type ?? entity.type)} {entity.entity_type ?? entity.type ?? 'entité'}
-      </span>
+      <span class="badge brand">{entity.entity_type ?? entity.type ?? 'entité'}</span>
     </div>
     <h2 class="drawer-title">{entity.name}</h2>
+    <p class="drawer-id mono" title="Identifiant">{entity.id}</p>
 
     {#if loadingData}
       <p class="loading">Chargement des relations…</p>
     {:else}
       {#if articleSummary}
         <section class="drawer-summary">
-          <h3 class="section-title">📖 Résumé</h3>
+          <h3 class="section-title">Résumé</h3>
           <p class="summary-text">{articleSummary}</p>
         </section>
       {/if}
@@ -118,7 +118,7 @@
         <div class="drawer-kv"><span class="k">Pays</span><span class="v">{entity.country ?? entity.properties?.country}</span></div>
       {/if}
       {#if entity.properties?.source}
-        <div class="drawer-kv"><span class="k">Source</span><span class="v src-badge">{entity.properties.source}</span></div>
+        <div class="drawer-kv"><span class="k">Source</span><span class="v mono">{entity.properties.source}</span></div>
       {/if}
 
       {#if entity.properties && Object.keys(entity.properties).filter((k) => !['description', 'country', 'source'].includes(k)).length > 0}
@@ -145,10 +145,12 @@
             {#each articleRelations as r (r.from + '|' + r.relType + '|' + r.to)}
               <li class="rel-item">
                 {#if r.outgoing}
-                  <span class="rel-dir">→</span> <strong>{r.relType}</strong>
+                  <span class="rel-dir" aria-label="sortante"><Icon name="arrowRight" size={14} /></span>
+                  <span class="rel-type mono">{r.relType}</span>
                   <span class="rel-target">{stripSourcePrefix(r.to)}</span>
                 {:else}
-                  <span class="rel-dir">←</span> <strong>{r.relType}</strong>
+                  <span class="rel-dir" aria-label="entrante"><Icon name="arrowLeft" size={14} /></span>
+                  <span class="rel-type mono">{r.relType}</span>
                   <span class="rel-target">{stripSourcePrefix(r.from)}</span>
                 {/if}
               </li>
@@ -158,8 +160,8 @@
       {/if}
 
       <div class="drawer-actions">
-        <button class="secondary small" on:click={handleOpenInFocus}>
-          🎯 Ouvrir en Vue Focus
+        <button on:click={handleOpenInFocus}>
+          <Icon name="focus" size={16} /> Ouvrir en vue Focus
         </button>
       </div>
     {/if}
@@ -170,8 +172,7 @@
   .drawer-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(4px);
+    background: var(--scrim);
     z-index: 99;
   }
 
@@ -180,60 +181,48 @@
     top: 0;
     right: 0;
     bottom: 0;
-    width: 480px;
-    background: rgba(10, 10, 15, 0.95);
-    backdrop-filter: blur(40px) saturate(180%);
-    border-left: 1px solid rgba(255, 255, 255, 0.1);
+    width: min(480px, 100vw);
+    background: var(--surface);
+    border-left: 1px solid var(--border);
     padding: 1.5rem;
     overflow-y: auto;
     z-index: 100;
-    box-shadow: -10px 0 40px rgba(0, 0, 0, 0.6);
+    box-shadow: var(--shadow);
   }
 
   .close-drawer {
-    position: fixed;
+    position: absolute;
     top: 1rem;
     right: 1rem;
-    width: 36px;
-    height: 36px;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 50%;
-    color: #e2e8f0;
-    font-size: 1.3rem;
-    cursor: pointer;
-    z-index: 200;
-    line-height: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .close-drawer:hover {
-    background: rgba(255, 255, 255, 0.12);
   }
 
   .drawer-head {
-    margin-bottom: 0.75rem;
+    margin-bottom: 0.6rem;
   }
 
   .drawer-title {
-    font-size: 1.4rem;
-    margin: 0 0 1rem 0;
-    color: #e2e8f0;
+    font-size: var(--fs-xl);
+    font-weight: 700;
+    margin: 0 2.5rem 0.25rem 0;
+  }
+
+  .drawer-id {
+    margin: 0 0 1.25rem;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    overflow-wrap: anywhere;
   }
 
   .drawer-summary {
-    background: rgba(45, 212, 191, 0.08);
-    border-left: 3px solid #2dd4bf;
+    background: var(--brand-soft);
+    border-left: 3px solid var(--brand-text);
     padding: 0.85rem 1rem;
-    border-radius: 0 12px 12px 0;
-    margin-bottom: 1rem;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    margin-bottom: 1.25rem;
   }
 
   .summary-text {
-    color: #cbd5e1;
-    font-size: 0.9rem;
+    font-size: var(--fs-sm);
     line-height: 1.6;
     margin: 0;
   }
@@ -243,17 +232,17 @@
   }
 
   .section-title {
-    font-size: 0.75rem;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: #64748b;
-    margin: 0 0 0.5rem 0;
-    font-weight: 500;
+    letter-spacing: var(--tracking-caps);
+    color: var(--text-3);
+    margin: 0 0 0.5rem;
+    font-weight: 600;
   }
 
   .drawer-desc {
-    color: #94a3b8;
-    font-size: 0.9rem;
+    color: var(--text-2);
+    font-size: var(--fs-sm);
     line-height: 1.6;
     margin: 0;
   }
@@ -261,20 +250,20 @@
   .drawer-kv {
     display: flex;
     justify-content: space-between;
+    gap: 1rem;
     padding: 0.4rem 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-    font-size: 0.85rem;
+    border-bottom: 1px solid var(--border);
+    font-size: var(--fs-sm);
   }
 
   .drawer-kv .k {
-    color: #94a3b8;
+    color: var(--text-2);
   }
 
   .drawer-kv .v {
-    color: #e2e8f0;
     text-align: right;
     max-width: 60%;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 
   .rel-list {
@@ -284,19 +273,27 @@
   }
 
   .rel-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
     padding: 0.4rem 0;
-    font-size: 0.85rem;
-    color: #cbd5e1;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    font-size: var(--fs-sm);
+    border-bottom: 1px solid var(--border);
   }
 
   .rel-dir {
-    color: #2dd4bf;
-    margin-right: 0.3rem;
+    color: var(--brand-text);
+    display: inline-flex;
+  }
+
+  .rel-type {
+    color: var(--text-2);
+    font-size: var(--fs-xs);
   }
 
   .rel-target {
-    color: #94a3b8;
+    margin-left: auto;
+    text-align: right;
   }
 
   .drawer-actions {
@@ -304,18 +301,24 @@
     gap: 0.5rem;
     margin-top: 1.5rem;
     padding-top: 1rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    border-top: 1px solid var(--border);
+  }
+
+  .drawer-actions button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
   }
 
   .loading {
-    color: #94a3b8;
-    font-style: italic;
+    color: var(--text-2);
     text-align: center;
     padding: 2rem 0;
   }
+
   .trunc-note {
-    font-size: 0.78rem;
-    color: var(--text-dimmer);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
     margin: -0.25rem 0 0.5rem;
   }
 </style>
