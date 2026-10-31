@@ -25,7 +25,7 @@ pub fn init_python() -> Result<(), String> {
         let path_list = path
             .downcast::<PyList>()
             .map_err(|e| format!("Failed to downcast path: {}", e))?;
-        
+
         // Add paths in order: plugins site-packages first (for deps), then plugins, then le-coq root
         // INSERT en tête (position 0) : un VIRTUAL_ENV externe peut injecter
         // un venv Python 3.14 en premier, masquant les deps cp311.
@@ -47,7 +47,10 @@ pub fn init_python() -> Result<(), String> {
         let path_str: String = path.str().map_err(|e| e.to_string())?.to_string();
         eprintln!("[plugin_bridge] sys.path = {}", path_str);
         match py.import("pydantic_core") {
-            Ok(m) => eprintln!("[plugin_bridge] pydantic_core OK: {:?}", m.getattr("__file__")),
+            Ok(m) => eprintln!(
+                "[plugin_bridge] pydantic_core OK: {:?}",
+                m.getattr("__file__")
+            ),
             Err(e) => eprintln!("[plugin_bridge] pydantic_core FAIL: {}", e),
         }
 
@@ -69,15 +72,12 @@ pub fn call_plugin_method(
             .map_err(|e| format!("Failed to import plugins module: {}", e))?;
 
         // Call the sync wrapper method
-        let args_dict = json_to_pydict(py, args)
-            .map_err(|e| e.to_string())?;
+        let args_dict = json_to_pydict(py, args).map_err(|e| e.to_string())?;
         let result_obj = plugins_module
             .getattr("call_plugin_method_sync")
             .map_err(|e| format!("Failed to get call_plugin_method_sync: {}", e))?
             .call1((plugin_name, method, args_dict))
-            .map_err(|e| {
-                format!("Failed to call method '{}.{}': {}", plugin_name, method, e)
-            })?;
+            .map_err(|e| format!("Failed to call method '{}.{}': {}", plugin_name, method, e))?;
 
         // Convert result to JSON
         let result_value = pydict_to_json(result_obj)
@@ -183,9 +183,7 @@ pub fn reload_plugins() -> Result<Vec<String>, String> {
 
         let sys = py.import("sys").map_err(|e| e.to_string())?;
         let modules = sys.getattr("modules").map_err(|e| e.to_string())?;
-        let modules = modules
-            .downcast::<PyDict>()
-            .map_err(|e| e.to_string())?;
+        let modules = modules.downcast::<PyDict>().map_err(|e| e.to_string())?;
         let mut to_reload = Vec::new();
         for (k, v) in modules.iter() {
             if let Ok(name) = k.extract::<String>() {
@@ -223,9 +221,7 @@ pub fn validate_plugin(plugin_name: &str) -> Result<bool, String> {
             .getattr("call_plugin_method_sync")
             .map_err(|e| format!("Failed to get call_plugin_method_sync: {}", e))?
             .call1((plugin_name, "validate", PyDict::new(py)))
-            .map_err(|e| {
-                format!("Failed to call validate on '{}': {}", plugin_name, e)
-            })?;
+            .map_err(|e| format!("Failed to call validate on '{}': {}", plugin_name, e))?;
 
         result_obj
             .extract::<bool>()
@@ -378,7 +374,10 @@ mod tests {
         Python::with_gil(|py| {
             let mut map = serde_json::Map::new();
             map.insert("key".to_string(), Value::String("value".to_string()));
-            map.insert("count".to_string(), Value::Number(serde_json::Number::from(10)));
+            map.insert(
+                "count".to_string(),
+                Value::Number(serde_json::Number::from(10)),
+            );
             let value = Value::Object(map);
             let result = json_to_pydict(py, &value).unwrap();
             let dict = result.downcast::<PyDict>(py).unwrap();
@@ -442,11 +441,14 @@ mod tests {
         Python::with_gil(|py| {
             let list = PyList::new(py, [1i64, 2i64, 3i64]);
             let result = pydict_to_json(list.as_ref()).unwrap();
-            assert_eq!(result, Value::Array(vec![
-                Value::Number(serde_json::Number::from(1)),
-                Value::Number(serde_json::Number::from(2)),
-                Value::Number(serde_json::Number::from(3)),
-            ]));
+            assert_eq!(
+                result,
+                Value::Array(vec![
+                    Value::Number(serde_json::Number::from(1)),
+                    Value::Number(serde_json::Number::from(2)),
+                    Value::Number(serde_json::Number::from(3)),
+                ])
+            );
         });
     }
 
@@ -459,7 +461,10 @@ mod tests {
             let result = pydict_to_json(dict.as_ref()).unwrap();
             let obj = result.as_object().unwrap();
             assert_eq!(obj.get("name").unwrap(), &Value::String("test".to_string()));
-            assert_eq!(obj.get("value").unwrap(), &Value::Number(serde_json::Number::from(123)));
+            assert_eq!(
+                obj.get("value").unwrap(),
+                &Value::Number(serde_json::Number::from(123))
+            );
         });
     }
 
@@ -480,7 +485,7 @@ mod tests {
     #[test]
     fn test_validate_plugin_wikipedia() {
         init_python().expect("Failed to init Python");
-        
+
         let valid = validate_plugin("wikipedia").expect("Failed to validate plugin");
         // Wikipedia plugin should be valid (no API key required)
         assert!(valid, "Wikipedia plugin should be valid");
@@ -489,20 +494,23 @@ mod tests {
     #[test]
     fn test_call_plugin_method_wikipedia_fetch() {
         init_python().expect("Failed to init Python");
-        
+
         let args = serde_json::json!({
             "query": "Rust programming language",
             "limit": 1
         });
-        
-        let result = call_plugin_method("wikipedia", "fetch", &args)
-            .expect("Failed to call plugin method");
-        
+
+        let result =
+            call_plugin_method("wikipedia", "fetch", &args).expect("Failed to call plugin method");
+
         assert!(result.success, "Plugin call should succeed");
         assert!(result.data.is_some(), "Should return data");
-        
+
         let data = result.data.unwrap();
         // Fetch returns a list of results
-        assert!(data.is_array() || data.is_object(), "Data should be array or object");
+        assert!(
+            data.is_array() || data.is_object(),
+            "Data should be array or object"
+        );
     }
 }

@@ -30,7 +30,11 @@ impl RelationshipRow {
 }
 
 /// List relationships with pagination.
-pub async fn list(pool: &PgPool, limit: i32, offset: i32) -> Result<Vec<RelationshipRow>, sqlx::Error> {
+pub async fn list(
+    pool: &PgPool,
+    limit: i32,
+    offset: i32,
+) -> Result<Vec<RelationshipRow>, sqlx::Error> {
     let rows = sqlx::query(
         "SELECT id, from_entity, to_entity, relationship_type, properties, confidence, sources
          FROM relationships

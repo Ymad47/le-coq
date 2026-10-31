@@ -2,18 +2,18 @@
 //! Handlers should: parse input → call db fn → format response. No SQL here.
 
 use axum::{
-    routing::{get, post},
-    Router,
     extract::State,
-    response::Json,
     http::StatusCode,
     middleware,
+    response::Json,
+    routing::{get, post},
+    Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::db;
-use crate::ingestion::{ingest_data, list_sources, ingest_from_source};
+use crate::ingestion::{ingest_data, ingest_from_source, list_sources};
 use crate::AppState;
 
 pub fn create_router(state: Arc<AppState>) -> Router {
@@ -22,7 +22,10 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/entities", get(list_entities).post(create_entity))
         .route("/api/v1/entities/:id", get(get_entity))
         .route("/api/v1/entities/:id/summary", get(entity_summary))
-        .route("/api/v1/relationships", get(list_relationships).post(create_relationship))
+        .route(
+            "/api/v1/relationships",
+            get(list_relationships).post(create_relationship),
+        )
         .route("/api/v1/search", get(smart_search).post(search))
         .route("/api/v1/topic", get(topic_search))
         .route("/api/v1/graph/neighborhood", post(graph_neighborhood))
@@ -93,7 +96,11 @@ mod auth_middleware_tests {
         if let Some(k) = key {
             req = req.header("X-API-Key", k);
         }
-        app().oneshot(req.body(Body::empty()).unwrap()).await.unwrap().status()
+        app()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
     }
 
     #[tokio::test]
@@ -103,12 +110,18 @@ mod auth_middleware_tests {
 
     #[tokio::test]
     async fn missing_key_is_401() {
-        assert_eq!(status("/api/v1/protected", None).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status("/api/v1/protected", None).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
     async fn wrong_key_is_401() {
-        assert_eq!(status("/api/v1/protected", Some("not-the-key")).await, StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status("/api/v1/protected", Some("not-the-key")).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
@@ -174,48 +187,82 @@ async fn create_entity(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<EntityResponse>, StatusCode> {
-    let name = payload.get("name").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
-    let entity_type = payload.get("entity_type").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
+    let name = payload
+        .get("name")
+        .and_then(|v| v.as_str())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let entity_type = payload
+        .get("entity_type")
+        .and_then(|v| v.as_str())
+        .ok_or(StatusCode::BAD_REQUEST)?;
 
-    let aliases_vec: Vec<String> = payload.get("aliases")
+    let aliases_vec: Vec<String> = payload
+        .get("aliases")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(String::from).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(String::from)
+                .collect()
+        })
         .unwrap_or_default();
 
-    let properties = payload.get("properties").cloned()
+    let properties = payload
+        .get("properties")
+        .cloned()
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
-    let sources_vec: Vec<String> = payload.get("sources")
+    let sources_vec: Vec<String> = payload
+        .get("sources")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(String::from).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(String::from)
+                .collect()
+        })
         .unwrap_or_default();
 
-    let id = payload.get("id").and_then(|v| v.as_str())
+    let id = payload
+        .get("id")
+        .and_then(|v| v.as_str())
         .map(String::from)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     // Reserved namespace guard
     const RESERVED_PREFIXES: &[&str] = &[
-        "wiki_", "wd_item_", "acled_", "gdelt_", "eurostat_country_",
-        "gleif_", "uncomtrade_", "oc_",
+        "wiki_",
+        "wd_item_",
+        "acled_",
+        "gdelt_",
+        "eurostat_country_",
+        "gleif_",
+        "uncomtrade_",
+        "oc_",
     ];
-    if payload.get("id").is_some()
-        && RESERVED_PREFIXES.iter().any(|p| id.starts_with(p))
-    {
+    if payload.get("id").is_some() && RESERVED_PREFIXES.iter().any(|p| id.starts_with(p)) {
         tracing::warn!("create_entity rejected: reserved id prefix '{}'", id);
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    db::entities::insert(&state.postgres, &id, name, entity_type, &aliases_vec, &properties, &sources_vec)
-        .await
-        .map_err(|e| {
-            tracing::error!("Database error: {}", e);
-            if e.to_string().contains("duplicate key") {
-                StatusCode::CONFLICT
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-        })?;
+    db::entities::insert(
+        &state.postgres,
+        &id,
+        name,
+        entity_type,
+        &aliases_vec,
+        &properties,
+        &sources_vec,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!("Database error: {}", e);
+        if e.to_string().contains("duplicate key") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    })?;
 
     Ok(Json(EntityResponse {
         id,
@@ -236,7 +283,8 @@ async fn get_entity(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    row.map(|r| Json(EntityResponse::from(r))).ok_or(StatusCode::NOT_FOUND)
+    row.map(|r| Json(EntityResponse::from(r)))
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 // ============================================================
@@ -255,7 +303,8 @@ async fn entity_summary(
         })?
         .ok_or((StatusCode::NOT_FOUND, "entity not found".into()))?;
 
-    let description = row.properties
+    let description = row
+        .properties
         .get("description")
         .and_then(|v| v.as_str())
         .unwrap_or("")
@@ -361,17 +410,20 @@ async fn list_relationships(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    let rels: Vec<serde_json::Value> = rows.iter().map(|r| {
-        serde_json::json!({
-            "id": r.id.to_string(),
-            "from_entity": r.from_entity,
-            "to_entity": r.to_entity,
-            "relationship_type": r.relationship_type,
-            "properties": r.properties,
-            "confidence": r.confidence,
-            "sources": r.sources,
+    let rels: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id.to_string(),
+                "from_entity": r.from_entity,
+                "to_entity": r.to_entity,
+                "relationship_type": r.relationship_type,
+                "properties": r.properties,
+                "confidence": r.confidence,
+                "sources": r.sources,
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(Json(rels))
 }
@@ -380,15 +432,35 @@ async fn create_relationship(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    let from_entity = payload.get("from_entity").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
-    let to_entity = payload.get("to_entity").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
-    let rel_type = payload.get("relationship_type").and_then(|v| v.as_str()).ok_or(StatusCode::BAD_REQUEST)?;
-    let confidence = payload.get("confidence").and_then(|v| v.as_f64()).map(|c| c as f32);
-    let properties = payload.get("properties").cloned()
+    let from_entity = payload
+        .get("from_entity")
+        .and_then(|v| v.as_str())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let to_entity = payload
+        .get("to_entity")
+        .and_then(|v| v.as_str())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let rel_type = payload
+        .get("relationship_type")
+        .and_then(|v| v.as_str())
+        .ok_or(StatusCode::BAD_REQUEST)?;
+    let confidence = payload
+        .get("confidence")
+        .and_then(|v| v.as_f64())
+        .map(|c| c as f32);
+    let properties = payload
+        .get("properties")
+        .cloned()
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-    let sources_vec: Vec<String> = payload.get("sources")
+    let sources_vec: Vec<String> = payload
+        .get("sources")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).map(String::from).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .map(String::from)
+                .collect()
+        })
         .unwrap_or_default();
 
     let (id, was_inserted) = db::relationships::insert(
@@ -455,16 +527,19 @@ async fn smart_search(
             (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
         })?;
 
-    let mut results: Vec<serde_json::Value> = rows.iter().map(|r| {
-        serde_json::json!({
-            "id": r.id,
-            "name": r.name,
-            "entity_type": r.entity_type,
-            "properties": r.properties,
-            "origin": "cache",
-            "source": "db",
+    let mut results: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "name": r.name,
+                "entity_type": r.entity_type,
+                "properties": r.properties,
+                "origin": "cache",
+                "source": "db",
+            })
         })
-    }).collect();
+        .collect();
 
     let mut new_ingested = 0usize;
     let mut errors = Vec::new();
@@ -485,8 +560,11 @@ async fn smart_search(
                     let src_c = src_cl.clone();
                     let q_c = q_cl.clone();
                     async move {
-                        let ingest_fut = ingest_from_source(state_c, &src_c, serde_json::json!({"query": q_c}));
-                        match tokio::time::timeout(std::time::Duration::from_secs(30), ingest_fut).await {
+                        let ingest_fut =
+                            ingest_from_source(state_c, &src_c, serde_json::json!({"query": q_c}));
+                        match tokio::time::timeout(std::time::Duration::from_secs(30), ingest_fut)
+                            .await
+                        {
                             Ok(Ok((count, errs))) => Ok(crate::plugin_bridge::PluginResult {
                                 success: true,
                                 data: Some(serde_json::json!({"inserted": count, "errors": errs})),
@@ -509,7 +587,10 @@ async fn smart_search(
                         if let Some(count) = data.get("inserted").and_then(|v| v.as_u64()) {
                             new_ingested += count as usize;
                             if !was_executed {
-                                tracing::info!("dedup hit: plugin='{}' result shared from in-flight request", src);
+                                tracing::info!(
+                                    "dedup hit: plugin='{}' result shared from in-flight request",
+                                    src
+                                );
                             }
                         }
                     }
@@ -524,18 +605,24 @@ async fn smart_search(
                 .await
                 .map_err(|e| {
                     tracing::error!("Smart search refresh error: {}", e);
-                    (StatusCode::INTERNAL_SERVER_ERROR, "DB refresh error".to_string())
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "DB refresh error".to_string(),
+                    )
                 })?;
-            results = rows2.iter().map(|r| {
-                serde_json::json!({
-                    "id": r.id,
-                    "name": r.name,
-                    "entity_type": r.entity_type,
-                    "properties": r.properties,
-                    "origin": "cache",
-                    "source": "db",
+            results = rows2
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "id": r.id,
+                        "name": r.name,
+                        "entity_type": r.entity_type,
+                        "properties": r.properties,
+                        "origin": "cache",
+                        "source": "db",
+                    })
                 })
-            }).collect();
+                .collect();
         }
     }
 
@@ -614,12 +701,14 @@ async fn topic_search(
 
     let entities: Vec<serde_json::Value> = entity_rows
         .iter()
-        .map(|r| serde_json::json!({
-            "id": r.id,
-            "name": r.name,
-            "entity_type": r.entity_type,
-            "properties": r.properties,
-        }))
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "name": r.name,
+                "entity_type": r.entity_type,
+                "properties": r.properties,
+            })
+        })
         .collect();
 
     Ok(Json(serde_json::json!({
@@ -678,15 +767,18 @@ async fn search(
         (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
     })?;
 
-    let results: Vec<serde_json::Value> = rows.iter().map(|r| {
-        serde_json::json!({
-            "id": r.entity.id,
-            "name": r.entity.name,
-            "entity_type": r.entity.entity_type,
-            "properties": r.entity.properties,
-            "rank": r.rank,
+    let results: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.entity.id,
+                "name": r.entity.name,
+                "entity_type": r.entity.entity_type,
+                "properties": r.entity.properties,
+                "rank": r.rank,
+            })
         })
-    }).collect();
+        .collect();
 
     Ok(Json(serde_json::json!({
         "query": payload.query,
@@ -745,7 +837,8 @@ async fn graph_neighborhood(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<NeighborhoodRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let (seeds, limit) = validate_neighborhood(payload).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let (seeds, limit) =
+        validate_neighborhood(payload).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     // Fetch one extra row: `truncated` is then exact, even when exactly
     // `limit` relations exist.
@@ -838,8 +931,13 @@ mod neighborhood_tests {
 
     #[test]
     fn rejects_too_many_seeds() {
-        let many: Vec<String> = (0..=NEIGHBORHOOD_MAX_SEEDS).map(|i| i.to_string()).collect();
-        let r = NeighborhoodRequest { ids: many, limit: None };
+        let many: Vec<String> = (0..=NEIGHBORHOOD_MAX_SEEDS)
+            .map(|i| i.to_string())
+            .collect();
+        let r = NeighborhoodRequest {
+            ids: many,
+            limit: None,
+        };
         assert!(validate_neighborhood(r).is_err());
     }
 
@@ -853,7 +951,10 @@ mod neighborhood_tests {
     fn clamps_limit() {
         assert_eq!(validate_neighborhood(req(&["a"], None)).unwrap().1, 2000);
         assert_eq!(validate_neighborhood(req(&["a"], Some(0))).unwrap().1, 1);
-        assert_eq!(validate_neighborhood(req(&["a"], Some(99_999))).unwrap().1, 5000);
+        assert_eq!(
+            validate_neighborhood(req(&["a"], Some(99_999))).unwrap().1,
+            5000
+        );
     }
 }
 

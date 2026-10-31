@@ -3,10 +3,10 @@
 use le_coq_backend::{api, db, plugin_bridge, AppState, Config};
 
 use anyhow::Result;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use std::net::SocketAddr;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -47,7 +47,7 @@ async fn main() -> Result<()> {
     tracing::info!("🐍 Python interpreter initialized");
 
     let postgres_pool = db::postgres::create_pool(&config.database_url).await?;
-    
+
     match config.auth {
         le_coq_backend::auth::AuthMode::Disabled => {
             tracing::warn!("⚠️  DISABLE_AUTH=true — API authentication is OFF (loopback only)")
@@ -71,19 +71,23 @@ async fn main() -> Result<()> {
                     uri = %request.uri(),
                 )
             })
-            .on_response(|response: &axum::http::Response<axum::body::Body>, latency: std::time::Duration, span: &tracing::Span| {
-                let _enter = span.enter();
-                tracing::info!(
-                    status = %response.status(),
-                    latency_ms = latency.as_millis(),
-                    "request completed"
-                );
-            }),
+            .on_response(
+                |response: &axum::http::Response<axum::body::Body>,
+                 latency: std::time::Duration,
+                 span: &tracing::Span| {
+                    let _enter = span.enter();
+                    tracing::info!(
+                        status = %response.status(),
+                        latency_ms = latency.as_millis(),
+                        "request completed"
+                    );
+                },
+            ),
     );
 
     let addr: SocketAddr = config.bind_address.parse()?;
     tracing::info!("🚀 Server listening on {}", addr);
-    
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
 

@@ -26,7 +26,10 @@ pub struct RelTypeCount {
 }
 
 /// Count neighbor entities grouped by type, both directions.
-pub async fn type_breakdown(pool: &PgPool, entity_id: &str) -> Result<Vec<TypeBreakdown>, sqlx::Error> {
+pub async fn type_breakdown(
+    pool: &PgPool,
+    entity_id: &str,
+) -> Result<Vec<TypeBreakdown>, sqlx::Error> {
     let rows = sqlx::query(
         r#"SELECT neighbor.entity_type, COUNT(*) as n
            FROM relationships r
@@ -51,7 +54,10 @@ pub async fn type_breakdown(pool: &PgPool, entity_id: &str) -> Result<Vec<TypeBr
 }
 
 /// Top 3 typed relation kinds (excludes generic types like "related"/"mentions").
-pub async fn top_rel_types(pool: &PgPool, entity_id: &str) -> Result<Vec<RelTypeCount>, sqlx::Error> {
+pub async fn top_rel_types(
+    pool: &PgPool,
+    entity_id: &str,
+) -> Result<Vec<RelTypeCount>, sqlx::Error> {
     let rows = sqlx::query(
         r#"SELECT relationship_type, COUNT(*) as n
            FROM relationships
@@ -75,7 +81,10 @@ pub async fn top_rel_types(pool: &PgPool, entity_id: &str) -> Result<Vec<RelType
 }
 
 /// Strongest neighbor by SUM(confidence) across shared typed relations.
-pub async fn top_neighbor(pool: &PgPool, entity_id: &str) -> Result<Option<TopNeighbor>, sqlx::Error> {
+pub async fn top_neighbor(
+    pool: &PgPool,
+    entity_id: &str,
+) -> Result<Option<TopNeighbor>, sqlx::Error> {
     let row = sqlx::query(
         r#"SELECT neighbor.id, neighbor.name, SUM(r.confidence) as weight, COUNT(*) as rels
            FROM relationships r

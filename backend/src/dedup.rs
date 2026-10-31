@@ -115,19 +115,21 @@ mod tests {
             let dedup = dedup.clone();
             let counter = counter.clone();
             handles.push(tokio::spawn(async move {
-                dedup.call("test".to_string(), || {
-                    let counter = counter.clone();
-                    async move {
-                        // Simulate slow plugin call
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        Ok(PluginResult {
-                            success: true,
-                            data: Some(serde_json::json!({"result": 42})),
-                            error: None,
-                        })
-                    }
-                }).await
+                dedup
+                    .call("test".to_string(), || {
+                        let counter = counter.clone();
+                        async move {
+                            // Simulate slow plugin call
+                            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            Ok(PluginResult {
+                                success: true,
+                                data: Some(serde_json::json!({"result": 42})),
+                                error: None,
+                            })
+                        }
+                    })
+                    .await
             }));
         }
 
@@ -137,9 +139,10 @@ mod tests {
         assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         // All 10 got success
-        let success_count = results.iter().filter(|r| {
-            matches!(r, Ok((Ok(res), _)) if res.success)
-        }).count();
+        let success_count = results
+            .iter()
+            .filter(|r| matches!(r, Ok((Ok(res), _)) if res.success))
+            .count();
         assert_eq!(success_count, 10);
     }
 }
