@@ -1,0 +1,4 @@
+# Test tooling for plugins/tests (pytest.ini sets asyncio_mode = auto).
+-r requirements.txt
+pytest>=8,<10
+pytest-asyncio>=0.23
