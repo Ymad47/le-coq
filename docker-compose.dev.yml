@@ -26,7 +26,6 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/le_coq
       BIND_ADDRESS: 0.0.0.0:8000
-      API_KEY_HEADER: X-API-Key
       LE_COQ_API_KEY: ${LE_COQ_API_KEY:?LE_COQ_API_KEY must be set (openssl rand -hex 32)}
       PYTHONPATH: /app
       LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu

@@ -53,7 +53,10 @@ async fn main() -> Result<()> {
             tracing::warn!("⚠️  DISABLE_AUTH=true — API authentication is OFF (loopback only)")
         }
         le_coq_backend::auth::AuthMode::ApiKey(_) => {
-            tracing::info!("🔐 API key auth enabled (header: {})", config.api_key_header)
+            tracing::info!(
+                "🔐 API key auth enabled (header: {})",
+                le_coq_backend::auth::API_KEY_HEADER
+            )
         }
     }
 

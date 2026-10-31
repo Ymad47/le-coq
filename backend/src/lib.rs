@@ -35,7 +35,6 @@ impl AppState {
 pub struct Config {
     pub bind_address: String,
     pub database_url: String,
-    pub api_key_header: String,
     pub auth: crate::auth::AuthMode,
 }
 
@@ -51,7 +50,6 @@ impl Config {
         Ok(Self {
             bind_address,
             database_url: std::env::var("DATABASE_URL")?,
-            api_key_header: std::env::var("API_KEY_HEADER").unwrap_or_else(|_| "X-API-Key".into()),
             auth,
         })
     }

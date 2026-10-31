@@ -48,7 +48,7 @@ async fn api_key_auth(
 
     let provided = req
         .headers()
-        .get(&state.config.api_key_header)
+        .get(crate::auth::API_KEY_HEADER)
         .map(|v| v.as_bytes());
 
     if state.config.auth.allows(provided) {
@@ -77,7 +77,6 @@ mod auth_middleware_tests {
         let config = Config {
             bind_address: "127.0.0.1:0".into(),
             database_url: String::new(),
-            api_key_header: "X-API-Key".into(),
             auth: AuthMode::from_settings(None, Some(KEY.into()), "127.0.0.1:0").unwrap(),
         };
         let state = Arc::new(AppState::new(pool, config));

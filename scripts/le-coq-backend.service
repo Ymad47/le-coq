@@ -8,10 +8,10 @@ Type=simple
 User=yaya
 WorkingDirectory=/home/yaya/le-coq
 Environment="BIND_ADDRESS=127.0.0.1:8000"
-# LE_COQ_API_KEY: provide via a root-only EnvironmentFile (chmod 600), not inline here
+# LE_COQ_API_KEY: provide via this EnvironmentFile (chmod 600, owned by the service user), not inline.
+# Values from EnvironmentFile= override Environment= lines below.
 EnvironmentFile=-/home/yaya/le-coq/.env.backend
 Environment="DATABASE_URL=postgresql://lecoq:***@localhost:5432/lecoq"
-Environment="API_KEY_HEADER=X-API-Key"
 Environment="RUST_LOG=le_coq=info,tower_http=debug"
 Environment="LD_LIBRARY_PATH=/home/yaya/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib"
 ExecStart=/home/yaya/le-coq/target/release/le-coq-backend

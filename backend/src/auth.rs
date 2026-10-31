@@ -12,6 +12,10 @@ use subtle::ConstantTimeEq;
 /// Minimum accepted key length. Generate one with `openssl rand -hex 32`.
 pub const MIN_API_KEY_LEN: usize = 32;
 
+/// Header carrying the key. Fixed on purpose: the Vite proxy, the nginx
+/// template and the Zig CLI all send this exact name.
+pub const API_KEY_HEADER: &str = "X-API-Key";
+
 /// Secret API key. `Debug` is redacted so the key never ends up in logs.
 #[derive(Clone)]
 pub struct ApiKey(String);
@@ -44,12 +48,24 @@ impl AuthMode {
     ///
     /// - `disable_auth`: value of `DISABLE_AUTH` (`"true"` disables auth)
     /// - `api_key`: value of `LE_COQ_API_KEY`
+    ///
+    /// A configured key always wins over `DISABLE_AUTH`, so a leftover
+    /// `DISABLE_AUTH=true` line can never silently turn auth off.
     pub fn from_settings(
         disable_auth: Option<&str>,
         api_key: Option<String>,
         bind_address: &str,
     ) -> Result<Self, AuthConfigError> {
-        if disable_auth == Some("true") {
+        let disable_requested = disable_auth == Some("true");
+
+        if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+            if disable_requested {
+                tracing::warn!("DISABLE_AUTH=true ignored because LE_COQ_API_KEY is set");
+            }
+            return Ok(Self::ApiKey(ApiKey::new(key)?));
+        }
+
+        if disable_requested {
             let addr: SocketAddr = bind_address
                 .parse()
                 .map_err(|_| AuthConfigError::InvalidBindAddress(bind_address.to_owned()))?;
@@ -61,10 +77,7 @@ impl AuthMode {
             return Ok(Self::Disabled);
         }
 
-        match api_key {
-            Some(key) if !key.is_empty() => Ok(Self::ApiKey(ApiKey::new(key)?)),
-            _ => Err(AuthConfigError::MissingKey),
-        }
+        Err(AuthConfigError::MissingKey)
     }
 
     /// Returns true if a request carrying `provided` (raw header bytes) is allowed.
@@ -151,6 +164,24 @@ mod tests {
     fn disable_auth_refused_on_public_bind() {
         let err = AuthMode::from_settings(Some("true"), None, "0.0.0.0:8000").unwrap_err();
         assert!(matches!(err, AuthConfigError::DisabledOnPublicBind(_)));
+    }
+
+    #[test]
+    fn configured_key_wins_over_disable_auth() {
+        let mode =
+            AuthMode::from_settings(Some("true"), Some(KEY.into()), "127.0.0.1:8000").unwrap();
+        assert!(matches!(mode, AuthMode::ApiKey(_)));
+        assert!(!mode.allows(None));
+        // With a key set, a public bind is fine even if DISABLE_AUTH is left over.
+        let mode = AuthMode::from_settings(Some("true"), Some(KEY.into()), "0.0.0.0:8000").unwrap();
+        assert!(matches!(mode, AuthMode::ApiKey(_)));
+    }
+
+    #[test]
+    fn disable_auth_with_short_key_still_fails() {
+        let err = AuthMode::from_settings(Some("true"), Some("short".into()), "127.0.0.1:8000")
+            .unwrap_err();
+        assert_eq!(err, AuthConfigError::KeyTooShort);
     }
 
     #[test]
