@@ -747,12 +747,16 @@ async fn graph_neighborhood(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let (seeds, limit) = validate_neighborhood(payload).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
-    let rels = db::relationships::touching(&state.postgres, &seeds, limit)
+    // Fetch one extra row: `truncated` is then exact, even when exactly
+    // `limit` relations exist.
+    let mut rels = db::relationships::touching(&state.postgres, &seeds, limit + 1)
         .await
         .map_err(|e| {
             tracing::error!("neighborhood relations DB error: {}", e);
             (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
         })?;
+    let truncated = rels.len() as i64 > limit;
+    rels.truncate(limit as usize);
 
     // Seeds first, then every neighbor referenced by a returned relation.
     let mut wanted: Vec<String> = seeds.clone();
@@ -801,7 +805,6 @@ async fn graph_neighborhood(
         })
         .collect();
 
-    let truncated = relationships.len() as i64 >= limit;
     Ok(Json(serde_json::json!({
         "seeds": seeds,
         "entities": entities,

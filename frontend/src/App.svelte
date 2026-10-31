@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import type { Entity, Relationship, View, MapCountryInfo } from './lib/types';
+  import type { Entity, Relationship, View, MapCountryInfo, Neighborhood } from './lib/types';
   import * as api from './lib/api';
   import { readRoute, writeRoute } from './lib/route';
   import { typeBadge } from './lib/utils';
@@ -126,15 +126,16 @@
         graphTruncated = false;
         graphScope = 'aucun résultat à afficher';
       } else {
-        const seeds = entities.map((e) => e.id);
+        const seeds = api.uniqueIds(entities.map((e) => e.id));
+        const shown = Math.min(seeds.length, api.MAX_SEEDS);
         const hood = await api.getNeighborhood(seeds);
         if (token !== requestToken) return;
         graphEntities = hood.entities.map(normalize);
         graphRels = hood.relationships;
-        graphTruncated = hood.truncated || seeds.length > 500;
+        graphTruncated = hood.truncated || seeds.length > api.MAX_SEEDS;
         graphScope = query.trim()
-          ? `voisinage de ${Math.min(seeds.length, 500)} résultat${seeds.length > 1 ? 's' : ''}`
-          : `voisinage des ${Math.min(seeds.length, 500)} entités les plus récentes`;
+          ? `voisinage de ${shown} résultat${shown > 1 ? 's' : ''}`
+          : `voisinage des ${shown} entités les plus récentes`;
       }
       focusHubId = null;
       await tick();
@@ -144,6 +145,15 @@
     } finally {
       if (token === requestToken) loading = false;
     }
+  }
+
+  /** Union of two subgraphs, deduplicated by id (first one wins). */
+  function mergeNeighborhoods(a: Neighborhood, b: Neighborhood): { entities: Entity[]; relationships: Relationship[] } {
+    const ents = new Map<string, Entity>();
+    for (const e of [...a.entities, ...b.entities]) if (!ents.has(e.id)) ents.set(e.id, e);
+    const rels = new Map<string, Relationship>();
+    for (const r of [...a.relationships, ...b.relationships]) if (!rels.has(r.id)) rels.set(r.id, r);
+    return { entities: [...ents.values()], relationships: [...rels.values()] };
   }
 
   function pickHub(list: Entity[], q: string): Entity | null {
@@ -160,25 +170,35 @@
 
   /** Graph centered on one entity, 2 hops deep. */
   async function loadFocus(directHubId: string | null = null): Promise<void> {
+    // Take a token first: this also invalidates any graph load still in flight
+    const token = ++requestToken;
     const hubId = directHubId ?? pickHub(entities, query)?.id ?? null;
     if (!hubId) {
       error = 'Aucune entité à centrer : lancez une recherche qui renvoie au moins un résultat.';
       graphEntities = [];
       graphRels = [];
+      graphTruncated = false;
+      graphScope = '';
+      focusHubId = null;
+      loading = false;
+      await tick();
+      await graphView?.renderGraph();
       return;
     }
-    const token = ++requestToken;
     loading = true;
     error = '';
     try {
       const hop1 = await api.getNeighborhood([hubId]);
       if (token !== requestToken) return;
-      const ring = hop1.entities.map((e) => e.id).slice(0, 500);
+      const ring = api.uniqueIds(hop1.entities.map((e) => e.id));
       const hop2 = ring.length > 1 ? await api.getNeighborhood(ring) : hop1;
       if (token !== requestToken) return;
-      graphEntities = hop2.entities.map(normalize);
-      graphRels = hop2.relationships;
-      graphTruncated = hop1.truncated || hop2.truncated;
+      // hop2 is capped and sorted by confidence across all ring members, so
+      // it can miss the hub's own edges: always keep hop1 in the result.
+      const merged = mergeNeighborhoods(hop1, hop2);
+      graphEntities = merged.entities.map(normalize);
+      graphRels = merged.relationships;
+      graphTruncated = hop1.truncated || hop2.truncated || ring.length > api.MAX_SEEDS;
       focusHubId = hubId;
       const hubName = graphEntities.find((e) => e.id === hubId)?.name ?? hubId;
       graphScope = `centré sur ${hubName} · 2 sauts`;

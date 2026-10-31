@@ -62,6 +62,29 @@ const NAME_ALIASES: Record<string, string> = {
 const mapNameToIso2 = new Map<string, string>();
 const knownIso2 = new Set<string>(Object.values(ISO3_TO_2));
 
+// Names from the runtime's ICU data, so "Germany" / "Allemagne" resolve even
+// before the map file is loaded (the list view groups by country too).
+function makeDisplayNames(locale: string): Intl.DisplayNames | null {
+  try {
+    return new Intl.DisplayNames([locale], { type: 'region' });
+  } catch {
+    return null;
+  }
+}
+const displayFr = makeDisplayNames('fr');
+const displayEn = makeDisplayNames('en');
+for (const code of knownIso2) {
+  for (const dn of [displayEn, displayFr]) {
+    const name = dn?.of(code);
+    if (name && name !== code) mapNameToIso2.set(name.toLowerCase(), code);
+  }
+}
+
+/** Human-readable (French) name for an ISO-2 code, or the code itself. */
+export function countryLabel(iso2: string): string {
+  return displayFr?.of(iso2) ?? iso2;
+}
+
 /** Register the map's own region names (called once the map file is loaded). */
 export function registerRegionNames(paths: Record<string, { name?: string }>): void {
   for (const [code, data] of Object.entries(paths)) {

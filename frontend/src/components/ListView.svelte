@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { Entity } from '../lib/types';
   import { typeBadge } from '../lib/utils';
+  import { entityIso2, countryLabel } from '../lib/countries';
   import { createEventDispatcher } from 'svelte';
 
   export let entities: Entity[] = [];
@@ -24,7 +25,8 @@
 
   function groupKey(e: Entity, by: 'country' | 'type'): string {
     if (by === 'type') return e.entity_type ?? e.type ?? NO_GROUP;
-    return e.country ?? e.properties?.country ?? NO_GROUP;
+    // Normalized ISO-2 so 'FR' (gleif) and 'France' (eurostat) share a group
+    return entityIso2(e) ?? e.country ?? e.properties?.country ?? NO_GROUP;
   }
 
   function buildGroups(list: Entity[], by: 'country' | 'type'): [string, Entity[]][] {
@@ -46,6 +48,7 @@
 
   function groupLabel(k: string): string {
     if (k === NO_GROUP) return groupBy === 'type' ? 'Type inconnu' : 'Sans pays';
+    if (groupBy === 'country' && /^[A-Z]{2}$/.test(k)) return countryLabel(k);
     return k;
   }
 </script>

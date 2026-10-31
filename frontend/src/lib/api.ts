@@ -49,12 +49,20 @@ export async function checkHealth(): Promise<string> {
   return (await resp.text()).trim();
 }
 
+/** Backend cap on seed ids per neighborhood request. */
+export const MAX_SEEDS = 500;
+
+export function uniqueIds(ids: string[]): string[] {
+  return [...new Set(ids)];
+}
+
 /** 1-hop subgraph around the given entities (seeds + their direct neighbors). */
 export async function getNeighborhood(ids: string[], limit = 2000): Promise<Neighborhood> {
   return api<Neighborhood>('/api/v1/graph/neighborhood', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids: ids.slice(0, 500), limit }),
+    // Dedupe before capping so up to 500 *unique* seeds are sent
+    body: JSON.stringify({ ids: uniqueIds(ids).slice(0, MAX_SEEDS), limit }),
   });
 }
 
