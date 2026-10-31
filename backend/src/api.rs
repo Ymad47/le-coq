@@ -25,6 +25,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/relationships", get(list_relationships).post(create_relationship))
         .route("/api/v1/search", get(smart_search).post(search))
         .route("/api/v1/topic", get(topic_search))
+        .route("/api/v1/graph/neighborhood", post(graph_neighborhood))
         .route("/api/v1/ingest", post(ingest_data))
         .route("/api/v1/sources", get(list_sources))
         .route("/api/v1/plugins/health", get(plugins_health))
@@ -692,6 +693,165 @@ async fn search(
         "count": results.len(),
         "results": results,
     })))
+}
+
+// ============================================================
+// POST /api/v1/graph/neighborhood — 1-hop subgraph around seed entities
+// ============================================================
+
+const NEIGHBORHOOD_MAX_SEEDS: usize = 500;
+const NEIGHBORHOOD_MAX_ID_LEN: usize = 512;
+const NEIGHBORHOOD_DEFAULT_LIMIT: u32 = 2000;
+const NEIGHBORHOOD_MAX_LIMIT: u32 = 5000;
+
+#[derive(Deserialize)]
+struct NeighborhoodRequest {
+    ids: Vec<String>,
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+/// Validates the request: returns deduplicated seed ids (order kept) and the
+/// relationship limit. Pure function so it can be tested without a database.
+fn validate_neighborhood(req: NeighborhoodRequest) -> Result<(Vec<String>, i64), String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut ids = Vec::new();
+    for id in req.ids {
+        let id = id.trim().to_string();
+        if id.is_empty() {
+            continue;
+        }
+        if id.len() > NEIGHBORHOOD_MAX_ID_LEN {
+            return Err(format!("id longer than {} bytes", NEIGHBORHOOD_MAX_ID_LEN));
+        }
+        if seen.insert(id.clone()) {
+            ids.push(id);
+        }
+    }
+    if ids.is_empty() {
+        return Err("ids must contain at least one non-empty id".into());
+    }
+    if ids.len() > NEIGHBORHOOD_MAX_SEEDS {
+        return Err(format!("at most {} ids allowed", NEIGHBORHOOD_MAX_SEEDS));
+    }
+    let limit = req
+        .limit
+        .unwrap_or(NEIGHBORHOOD_DEFAULT_LIMIT)
+        .clamp(1, NEIGHBORHOOD_MAX_LIMIT);
+    Ok((ids, i64::from(limit)))
+}
+
+async fn graph_neighborhood(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<NeighborhoodRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let (seeds, limit) = validate_neighborhood(payload).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    let rels = db::relationships::touching(&state.postgres, &seeds, limit)
+        .await
+        .map_err(|e| {
+            tracing::error!("neighborhood relations DB error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
+        })?;
+
+    // Seeds first, then every neighbor referenced by a returned relation.
+    let mut wanted: Vec<String> = seeds.clone();
+    let mut seen: std::collections::HashSet<&str> = seeds.iter().map(String::as_str).collect();
+    let mut extra = Vec::new();
+    for r in &rels {
+        for end in [&r.from_entity, &r.to_entity] {
+            if seen.insert(end.as_str()) {
+                extra.push(end.clone());
+            }
+        }
+    }
+    wanted.extend(extra);
+
+    let entity_rows = db::entities::get_many(&state.postgres, &wanted)
+        .await
+        .map_err(|e| {
+            tracing::error!("neighborhood entities DB error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
+        })?;
+
+    let entities: Vec<serde_json::Value> = entity_rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "name": r.name,
+                "entity_type": r.entity_type,
+                "properties": r.properties,
+            })
+        })
+        .collect();
+
+    let relationships: Vec<serde_json::Value> = rels
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id.to_string(),
+                "from_entity": r.from_entity,
+                "to_entity": r.to_entity,
+                "relationship_type": r.relationship_type,
+                "properties": r.properties,
+                "confidence": r.confidence,
+                "sources": r.sources,
+            })
+        })
+        .collect();
+
+    let truncated = relationships.len() as i64 >= limit;
+    Ok(Json(serde_json::json!({
+        "seeds": seeds,
+        "entities": entities,
+        "relationships": relationships,
+        "truncated": truncated,
+    })))
+}
+
+#[cfg(test)]
+mod neighborhood_tests {
+    use super::*;
+
+    fn req(ids: &[&str], limit: Option<u32>) -> NeighborhoodRequest {
+        NeighborhoodRequest {
+            ids: ids.iter().map(|s| s.to_string()).collect(),
+            limit,
+        }
+    }
+
+    #[test]
+    fn dedups_and_trims_keeping_order() {
+        let (ids, _) = validate_neighborhood(req(&["b", " a ", "b", "", "a"], None)).unwrap();
+        assert_eq!(ids, vec!["b", "a"]);
+    }
+
+    #[test]
+    fn rejects_empty() {
+        assert!(validate_neighborhood(req(&[], None)).is_err());
+        assert!(validate_neighborhood(req(&["", "  "], None)).is_err());
+    }
+
+    #[test]
+    fn rejects_too_many_seeds() {
+        let many: Vec<String> = (0..=NEIGHBORHOOD_MAX_SEEDS).map(|i| i.to_string()).collect();
+        let r = NeighborhoodRequest { ids: many, limit: None };
+        assert!(validate_neighborhood(r).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_id() {
+        let long = "x".repeat(NEIGHBORHOOD_MAX_ID_LEN + 1);
+        assert!(validate_neighborhood(req(&[long.as_str()], None)).is_err());
+    }
+
+    #[test]
+    fn clamps_limit() {
+        assert_eq!(validate_neighborhood(req(&["a"], None)).unwrap().1, 2000);
+        assert_eq!(validate_neighborhood(req(&["a"], Some(0))).unwrap().1, 1);
+        assert_eq!(validate_neighborhood(req(&["a"], Some(99_999))).unwrap().1, 5000);
+    }
 }
 
 // ============================================================

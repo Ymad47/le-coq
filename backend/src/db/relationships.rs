@@ -89,6 +89,28 @@ pub async fn insert(
     }
 }
 
+/// Relationships with at least one endpoint in `entity_ids` (1-hop neighborhood).
+/// Both columns are indexed (idx_relationships_from_entity / _to_entity).
+pub async fn touching(
+    pool: &PgPool,
+    entity_ids: &[String],
+    limit: i64,
+) -> Result<Vec<RelationshipRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"SELECT id, from_entity, to_entity, relationship_type, properties, confidence, sources
+           FROM relationships
+           WHERE from_entity = ANY($1) OR to_entity = ANY($1)
+           ORDER BY confidence DESC NULLS LAST, created_at DESC
+           LIMIT $2"#,
+    )
+    .bind(entity_ids)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(RelationshipRow::from_row).collect())
+}
+
 /// Relationships where both endpoints are in `entity_ids`. Used by topic_search.
 pub async fn between_entities(
     pool: &PgPool,

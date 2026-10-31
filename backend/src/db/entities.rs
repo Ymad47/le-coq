@@ -77,6 +77,18 @@ pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<EntityRow>, sql
     Ok(row.as_ref().map(EntityRow::from_row))
 }
 
+/// Fetch several entities by id in one query. Unknown ids are skipped.
+pub async fn get_many(pool: &PgPool, ids: &[String]) -> Result<Vec<EntityRow>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT id, name, entity_type, properties FROM entities WHERE id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows.iter().map(EntityRow::from_row).collect())
+}
+
 /// Insert a new entity. Returns error on duplicate id.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert(
