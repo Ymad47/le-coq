@@ -8,8 +8,14 @@ server {
         try_files $uri $uri/ /index.html;
     }
 
+    # Rendered at container start by the nginx image (envsubst on
+    # /etc/nginx/templates/*.template). LE_COQ_API_KEY must be set on the
+    # container; it overrides any key sent by the browser.
+    # WARNING: anyone who can reach this server gets full API access.
+    # Protect it (basic auth, VPN-only listener) before exposing it.
     location /api {
         proxy_pass http://backend:8000;
+        proxy_set_header X-API-Key "${LE_COQ_API_KEY}";
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';

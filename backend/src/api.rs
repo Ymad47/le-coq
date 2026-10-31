@@ -46,15 +46,74 @@ async fn api_key_auth(
         return Ok(next.run(req).await);
     }
 
-    let api_key = req
+    let provided = req
         .headers()
         .get(&state.config.api_key_header)
-        .and_then(|v| v.to_str().ok());
+        .map(|v| v.as_bytes());
 
-    match api_key {
-        Some(key) if !key.is_empty() => Ok(next.run(req).await),
-        _ if std::env::var("DISABLE_AUTH").unwrap_or_default() == "true" => Ok(next.run(req).await),
-        _ => Err(StatusCode::UNAUTHORIZED),
+    if state.config.auth.allows(provided) {
+        Ok(next.run(req).await)
+    } else {
+        Err(StatusCode::UNAUTHORIZED)
+    }
+}
+
+#[cfg(test)]
+mod auth_middleware_tests {
+    use super::*;
+    use crate::auth::AuthMode;
+    use crate::{AppState, Config};
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    const KEY: &str = "0123456789abcdef0123456789abcdef";
+
+    /// Real middleware in front of a trivial handler; the DB pool is lazy and never used.
+    fn app() -> Router {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused@127.0.0.1:1/unused")
+            .expect("lazy pool");
+        let config = Config {
+            bind_address: "127.0.0.1:0".into(),
+            database_url: String::new(),
+            api_key_header: "X-API-Key".into(),
+            auth: AuthMode::from_settings(None, Some(KEY.into()), "127.0.0.1:0").unwrap(),
+        };
+        let state = Arc::new(AppState::new(pool, config));
+        Router::new()
+            .route("/health", get(|| async { "ok" }))
+            .route("/api/v1/protected", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(state.clone(), api_key_auth))
+            .with_state(state)
+    }
+
+    async fn status(path: &str, key: Option<&str>) -> StatusCode {
+        let mut req = Request::builder().uri(path);
+        if let Some(k) = key {
+            req = req.header("X-API-Key", k);
+        }
+        app().oneshot(req.body(Body::empty()).unwrap()).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn health_needs_no_key() {
+        assert_eq!(status("/health", None).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn missing_key_is_401() {
+        assert_eq!(status("/api/v1/protected", None).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn wrong_key_is_401() {
+        assert_eq!(status("/api/v1/protected", Some("not-the-key")).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn correct_key_passes() {
+        assert_eq!(status("/api/v1/protected", Some(KEY)).await, StatusCode::OK);
     }
 }
 

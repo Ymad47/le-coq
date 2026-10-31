@@ -1,14 +1,6 @@
 //! Le Coq Backend - Rust Core
 
-mod api;
-mod db;
-mod graph;
-mod plugin_bridge;
-mod ingestion;
-mod models;
-mod config;
-mod dedup;
-mod poller;
+use le_coq_backend::{api, db, plugin_bridge, AppState, Config};
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -40,6 +32,9 @@ async fn main() -> Result<()> {
 
     tracing::info!("🐓 Le Coq backend starting...");
 
+    // Fail fast on bad config (e.g. missing API key) before starting Python.
+    let config = Config::from_env()?;
+
     // Initialize Python interpreter (PyO3)
     plugin_bridge::init_python().map_err(|e| anyhow::anyhow!("Failed to init Python: {}", e))?;
     pyo3::Python::with_gil(|py| {
@@ -51,14 +46,18 @@ async fn main() -> Result<()> {
     });
     tracing::info!("🐍 Python interpreter initialized");
 
-    let config = Config::from_env()?;
     let postgres_pool = db::postgres::create_pool(&config.database_url).await?;
     
-    let state = Arc::new(AppState {
-        postgres: postgres_pool,
-        config: config.clone(),
-        dedup: crate::dedup::InflightRequests::new(),
-    });
+    match config.auth {
+        le_coq_backend::auth::AuthMode::Disabled => {
+            tracing::warn!("⚠️  DISABLE_AUTH=true — API authentication is OFF (loopback only)")
+        }
+        le_coq_backend::auth::AuthMode::ApiKey(_) => {
+            tracing::info!("🔐 API key auth enabled (header: {})", config.api_key_header)
+        }
+    }
+
+    let state = Arc::new(AppState::new(postgres_pool, config.clone()));
 
     let app = api::create_router(state).layer(
         TraceLayer::new_for_http()
@@ -86,30 +85,6 @@ async fn main() -> Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
-}
-
-#[derive(Clone)]
-pub struct AppState {
-    pub postgres: sqlx::Pool<sqlx::Postgres>,
-    pub config: Config,
-    pub dedup: crate::dedup::InflightRequests,
-}
-
-#[derive(Clone)]
-pub struct Config {
-    pub bind_address: String,
-    pub database_url: String,
-    pub api_key_header: String,
-}
-
-impl Config {
-    fn from_env() -> Result<Self> {
-        Ok(Self {
-            bind_address: std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8000".into()),
-            database_url: std::env::var("DATABASE_URL")?,
-            api_key_header: std::env::var("API_KEY_HEADER").unwrap_or_else(|_| "X-API-Key".into()),
-        })
-    }
 }
 
 /// Cherche python3.11 dans le PATH (binaire ou shim)

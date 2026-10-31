@@ -25,7 +25,8 @@ services:
       context: ..
       dockerfile: backend/Dockerfile
     environment:
-      BIND_ADDRESS: 0.0.0.0:8000
+      BIND_ADDRESS: 0.0.0.0:8000  # inside the container; host port is loopback-only
+      LE_COQ_API_KEY: ${LE_COQ_API_KEY:?LE_COQ_API_KEY must be set (openssl rand -hex 32)}
       DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/le_coq
     ports:
       - "127.0.0.1:8000:8000"
