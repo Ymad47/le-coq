@@ -17,7 +17,7 @@ path = "backend/src/main.rs"
 # Web framework
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
-tower = "0.4"
+tower = { version = "0.5", features = ["util"] }  # same major as axum 0.7
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Database
@@ -40,6 +40,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 lazy_static = "1"
+subtle = "2.6"  # constant-time API key comparison (already in lockfile via rustls)
 
 # Geospatial
 geo = "0.28"

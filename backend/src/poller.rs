@@ -8,7 +8,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::{info, error};
+use tracing::{error, info};
 
 #[derive(Debug, Deserialize)]
 struct LeChasseurOutput {
@@ -16,9 +16,12 @@ struct LeChasseurOutput {
     collected_at: String,
     #[serde(default)]
     entities: Vec<Entity>,
+    // Parsed to validate the file shape; the poller only ingests entities so far.
     #[serde(default)]
+    #[allow(dead_code)]
     events: Vec<Value>,
     #[serde(default)]
+    #[allow(dead_code)]
     relationships: Vec<Value>,
 }
 
@@ -47,8 +50,7 @@ impl PollerConfig {
             .unwrap_or_else(|_| "300".to_string())
             .parse::<u64>()
             .context("Invalid POLL_INTERVAL_SECS")?;
-        let database_url = std::env::var("DATABASE_URL")
-            .context("DATABASE_URL not set")?;
+        let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL not set")?;
 
         Ok(Self {
             le_chasseur_output_dir,
@@ -100,7 +102,7 @@ impl Poller {
 
     async fn poll_and_ingest(&mut self) -> Result<usize> {
         let entities_dir = self.config.le_chasseur_output_dir.join("entities");
-        
+
         if !entities_dir.exists() {
             return Ok(0);
         }
@@ -113,7 +115,7 @@ impl Poller {
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            
+
             // Skip non-JSON files
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
@@ -133,14 +135,16 @@ impl Poller {
             // Parse timestamp from filename: YYYYMMDD_HHMMSS_source.json
             if let Some(timestamp) = self.extract_timestamp(&filename) {
                 // Only process files newer than last poll
-                if self.last_processed_time.is_none() || timestamp > self.last_processed_time.unwrap() {
+                if self.last_processed_time.is_none()
+                    || timestamp > self.last_processed_time.unwrap()
+                {
                     new_files.push((path, filename, timestamp));
                 }
             }
         }
 
         // Sort by timestamp (oldest first)
-        new_files.sort_by(|a, b| a.2.cmp(&b.2));
+        new_files.sort_by_key(|(_, _, ts)| *ts);
 
         // Process new files
         for (path, filename, timestamp) in new_files {
@@ -166,7 +170,7 @@ impl Poller {
         if parts.len() >= 2 {
             let date_str = parts[0];
             let time_str = parts[1];
-            
+
             if date_str.len() == 8 && time_str.len() == 6 {
                 let datetime_str = format!(
                     "{}-{}-{}T{}:{}:{}Z",
@@ -177,7 +181,7 @@ impl Poller {
                     &time_str[2..4],
                     &time_str[4..6]
                 );
-                
+
                 return DateTime::parse_from_rfc3339(&datetime_str)
                     .ok()
                     .map(|dt| dt.with_timezone(&chrono::Utc));
@@ -207,7 +211,9 @@ impl Poller {
         let mut ingested = 0;
 
         for entity in output.entities {
-            let properties = entity.properties.unwrap_or(Value::Object(serde_json::Map::new()));
+            let properties = entity
+                .properties
+                .unwrap_or(Value::Object(serde_json::Map::new()));
             let sources = vec![output.source.clone()];
 
             // Parse created_at timestamp
@@ -267,7 +273,7 @@ mod tests {
 
         let result = poller.extract_timestamp("20260804_145125_wikipedia.json");
         assert!(result.is_some());
-        
+
         let dt = result.unwrap();
         assert_eq!(dt.year(), 2026);
         assert_eq!(dt.month(), 8);

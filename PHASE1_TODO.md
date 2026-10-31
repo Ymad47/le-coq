@@ -29,7 +29,7 @@
 
 ### 3. API Key Configuration
 - [ ] Generate secure API key: `openssl rand -hex 32`
-- [ ] Add to docker-compose.yml environment: `API_KEY_HEADER=X-API-Key`
+- [x] Key header is fixed to `X-API-Key` (`API_KEY_HEADER` is no longer read); set `LE_COQ_API_KEY` instead
 - [ ] Document in README.md how to set API keys
 - [ ] Test auth: `curl -H "X-API-Key: *** http://localhost:8000/api/v1/entities`
 

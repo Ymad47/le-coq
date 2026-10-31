@@ -69,6 +69,13 @@ export interface ArticleRelation {
 
 export type View = 'list' | 'graph' | 'focus' | 'map';
 
+export interface Neighborhood {
+  seeds: string[];
+  entities: Entity[];
+  relationships: Relationship[];
+  truncated: boolean;
+}
+
 export interface GraphNode {
   id: string;
   label: string;

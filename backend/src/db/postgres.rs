@@ -9,9 +9,9 @@ pub async fn create_pool(database_url: &str) -> Result<PgPool> {
         .acquire_timeout(std::time::Duration::from_secs(30))
         .connect(database_url)
         .await?;
-    
+
     // Run migrations
     sqlx::migrate!("backend/migrations").run(&pool).await?;
-    
+
     Ok(pool)
 }

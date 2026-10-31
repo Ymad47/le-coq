@@ -2,7 +2,7 @@
   import { createEventDispatcher, onMount, onDestroy } from 'svelte';
   import type { Entity, ArticleRelation } from '../lib/types';
   import { typeBadge, stripSourcePrefix } from '../lib/utils';
-  import { getEntitySummary, listRelationships } from '../lib/api';
+  import { getEntitySummary, getNeighborhood } from '../lib/api';
 
   export let entity: Entity | null = null;
 
@@ -13,38 +13,43 @@
 
   let articleRelations: ArticleRelation[] = [];
   let articleSummary: string | null = null;
+  let relationsTruncated = false;
   let loadingData = false;
+
+  const MAX_RELATIONS = 500;
+
+  // Opening B while A is still loading must not show A's data under B's title
+  let requestToken = 0;
 
   $: if (entity) loadEntityData(entity);
 
   async function loadEntityData(e: Entity) {
+    const token = ++requestToken;
     loadingData = true;
     articleRelations = [];
     articleSummary = null;
+    relationsTruncated = false;
     try {
-      const [rels, summaryRes] = await Promise.all([
-        listRelationships(5000),
+      // Only this entity's own relations (the endpoint returns nothing else)
+      const [hood, summaryRes] = await Promise.all([
+        getNeighborhood([e.id], MAX_RELATIONS),
         getEntitySummary(e.id).catch(() => null),
       ]);
-      const id = e.id;
-      articleRelations = rels
-        .filter((r) => {
-          const from = (r as any).source_id ?? r.from_entity;
-          const to = (r as any).target_id ?? r.to_entity;
-          return from === id || to === id;
-        })
-        .map((r) => {
-          const from = (r as any).source_id ?? r.from_entity;
-          const to = (r as any).target_id ?? r.to_entity;
-          const relType = (r as any).relation_type ?? r.relationship_type ?? (r as any).type ?? '';
-          return { from, to, relType, outgoing: from === id };
-        });
+      if (token !== requestToken) return;
+      articleRelations = hood.relationships.map((r) => ({
+        from: r.from_entity,
+        to: r.to_entity,
+        relType: r.relationship_type ?? '',
+        outgoing: r.from_entity === e.id,
+      }));
+      relationsTruncated = hood.truncated;
       articleSummary = summaryRes?.summary ?? null;
     } catch {
+      if (token !== requestToken) return;
       articleRelations = [];
       articleSummary = null;
     } finally {
-      loadingData = false;
+      if (token === requestToken) loadingData = false;
     }
   }
 
@@ -130,7 +135,12 @@
 
       {#if articleRelations.length > 0}
         <section class="drawer-section">
-          <h3 class="section-title">Relations ({articleRelations.length})</h3>
+          <h3 class="section-title">
+            Relations ({articleRelations.length}{relationsTruncated ? '+' : ''})
+          </h3>
+          {#if relationsTruncated}
+            <p class="trunc-note">Les {MAX_RELATIONS} relations les plus fiables sont affichées.</p>
+          {/if}
           <ul class="rel-list">
             {#each articleRelations as r (r.from + '|' + r.relType + '|' + r.to)}
               <li class="rel-item">
@@ -302,5 +312,10 @@
     font-style: italic;
     text-align: center;
     padding: 2rem 0;
+  }
+  .trunc-note {
+    font-size: 0.78rem;
+    color: var(--text-dimmer);
+    margin: -0.25rem 0 0.5rem;
   }
 </style>

@@ -45,9 +45,8 @@ pub async fn search_entities(pool: &PgPool, q: &str) -> Result<Vec<EntityRow>, s
     }
 
     // Multi-word: build dynamic AND chain
-    let mut sql_like = String::from(
-        "SELECT id, name, entity_type, properties FROM entities WHERE ",
-    );
+    let mut sql_like =
+        String::from("SELECT id, name, entity_type, properties FROM entities WHERE ");
     for i in 0..words.len() {
         if i > 0 {
             sql_like.push_str(" AND ");
@@ -80,7 +79,8 @@ pub async fn search_filtered(
     let mut sql = "SELECT id, name, entity_type, properties,
                    ts_rank(to_tsvector('english', name), plainto_tsquery('english', $1)) as rank
          FROM entities
-         WHERE to_tsvector('english', name) @@ plainto_tsquery('english', $1)".to_string();
+         WHERE to_tsvector('english', name) @@ plainto_tsquery('english', $1)"
+        .to_string();
 
     let mut binds: Vec<String> = vec![query.to_string()];
     let mut param_index = 2;
@@ -92,7 +92,10 @@ pub async fn search_filtered(
     }
 
     if let Some(c) = confidence {
-        sql.push_str(&format!(" AND (properties->>'confidence')::float >= ${}", param_index));
+        sql.push_str(&format!(
+            " AND (properties->>'confidence')::float >= ${}",
+            param_index
+        ));
         binds.push(c.to_string());
         param_index += 1;
     }
@@ -127,7 +130,11 @@ pub async fn search_filtered(
 
 /// Topic search: find entities whose name OR properties contain ALL terms (ranked by coverage).
 pub async fn topic_entities(pool: &PgPool, q: &str) -> Result<Vec<EntityRow>, sqlx::Error> {
-    let terms: Vec<String> = q.to_lowercase().split_whitespace().map(|s| s.to_string()).collect();
+    let terms: Vec<String> = q
+        .to_lowercase()
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
     let pattern = format!("%{}%", terms.join("%"));
 
     let sql = r#"SELECT id, name, entity_type, properties
@@ -141,7 +148,7 @@ pub async fn topic_entities(pool: &PgPool, q: &str) -> Result<Vec<EntityRow>, sq
 
     let rows = sqlx::query(sql)
         .bind(&pattern)
-        .bind(&q.to_lowercase())
+        .bind(q.to_lowercase())
         .fetch_all(pool)
         .await?;
 

@@ -4,20 +4,51 @@ on:
   push:
     branches: [main, develop]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
+  workflow_dispatch:
+
+# Read-only token: CI only checks out and tests.
+permissions:
+  contents: read
+
+# A new push to the same branch/PR cancels the run still in progress.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
   PYTHON_VERSION: "3.11"
 
 jobs:
-  test-rust:
+  rust:
+    name: Rust (fmt, clippy, tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      # PyO3 links against CPython 3.11 (abi3-py311), and the Rust tests run the
+      # Python plugins through the embedded interpreter, so they need its deps.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: plugins/requirements*.txt
+
+      - name: Install plugin dependencies
+        run: python -m pip install -r plugins/requirements.txt
+
+      # .cargo/config.toml points PYO3_PYTHON at a local path; a value already in
+      # the environment takes precedence over Cargo's [env] table.
+      - name: Point PyO3 and the plugin loader at this checkout
+        run: |
+          echo "PYO3_PYTHON=${pythonLocation}/bin/python" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=${pythonLocation}/lib" >> "$GITHUB_ENV"
+          echo "LE_COQ_ROOT=${GITHUB_WORKSPACE}" >> "$GITHUB_ENV"
+
       - name: Install Rust
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
 
@@ -27,16 +58,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Clippy lints
-        run: cargo clippy -- -D warnings
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Build
-        run: cargo build --verbose
+      - name: Tests
+        run: cargo test --locked
 
-      - name: Run Rust tests
-        run: cargo test --verbose
-
-  test-python:
+  python:
+    name: Python plugins (pytest)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,35 +74,36 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: plugins/requirements*.txt
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio
+        run: python -m pip install -r plugins/requirements-dev.txt
 
-      - name: Run Python tests
-        run: |
-          PYTHONPATH=. pytest plugins/tests/ -v
+      - name: Run tests
+        run: PYTHONPATH=. pytest plugins/tests/
 
-  integration:
+  frontend:
+    name: Frontend (svelte-check, build)
     runs-on: ubuntu-latest
-    needs: [test-rust, test-python]
+    defaults:
+      run:
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-action@stable
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
 
-      - name: Install Python deps
-        run: pip install pytest pytest-asyncio
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Build and test
-        run: |
-          cargo build
-          cargo test
-          PYTHONPATH=. pytest plugins/tests/ -v
+      - name: Type check
+        run: npx svelte-check --tsconfig ./tsconfig.json --fail-on-warnings
+
+      - name: Build
+        run: npm run build

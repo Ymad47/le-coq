@@ -33,32 +33,42 @@ pub struct EntityFilters {
 
 /// List entities with optional filters.
 pub async fn list(pool: &PgPool, filters: EntityFilters) -> Result<Vec<EntityRow>, sqlx::Error> {
-    let mut sql = String::from(
-        "SELECT id, name, entity_type, properties FROM entities WHERE 1=1",
-    );
+    let mut sql = String::from("SELECT id, name, entity_type, properties FROM entities WHERE 1=1");
 
     let rows = match (filters.entity_type.as_deref(), filters.search.as_deref()) {
         (Some(t), Some(q)) => {
             sql.push_str(" AND entity_type = $1 AND (name ILIKE $2 OR properties::text ILIKE $2) ORDER BY created_at DESC LIMIT $3");
             let pat = format!("%{}%", q);
-            sqlx::query(&sql).bind(t).bind(pat).bind(filters.limit)
-                .fetch_all(pool).await?
+            sqlx::query(&sql)
+                .bind(t)
+                .bind(pat)
+                .bind(filters.limit)
+                .fetch_all(pool)
+                .await?
         }
         (Some(t), None) => {
             sql.push_str(" AND entity_type = $1 ORDER BY created_at DESC LIMIT $2");
-            sqlx::query(&sql).bind(t).bind(filters.limit)
-                .fetch_all(pool).await?
+            sqlx::query(&sql)
+                .bind(t)
+                .bind(filters.limit)
+                .fetch_all(pool)
+                .await?
         }
         (None, Some(q)) => {
             sql.push_str(" AND (name ILIKE $1 OR properties::text ILIKE $1) ORDER BY created_at DESC LIMIT $2");
             let pat = format!("%{}%", q);
-            sqlx::query(&sql).bind(pat).bind(filters.limit)
-                .fetch_all(pool).await?
+            sqlx::query(&sql)
+                .bind(pat)
+                .bind(filters.limit)
+                .fetch_all(pool)
+                .await?
         }
         (None, None) => {
             sql.push_str(" ORDER BY created_at DESC LIMIT $1");
-            sqlx::query(&sql).bind(filters.limit)
-                .fetch_all(pool).await?
+            sqlx::query(&sql)
+                .bind(filters.limit)
+                .fetch_all(pool)
+                .await?
         }
     };
 
@@ -67,14 +77,23 @@ pub async fn list(pool: &PgPool, filters: EntityFilters) -> Result<Vec<EntityRow
 
 /// Fetch single entity by id.
 pub async fn get_by_id(pool: &PgPool, id: &str) -> Result<Option<EntityRow>, sqlx::Error> {
-    let row = sqlx::query(
-        "SELECT id, name, entity_type, properties FROM entities WHERE id = $1",
-    )
-    .bind(id)
-    .fetch_optional(pool)
-    .await?;
+    let row = sqlx::query("SELECT id, name, entity_type, properties FROM entities WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
 
     Ok(row.as_ref().map(EntityRow::from_row))
+}
+
+/// Fetch several entities by id in one query. Unknown ids are skipped.
+pub async fn get_many(pool: &PgPool, ids: &[String]) -> Result<Vec<EntityRow>, sqlx::Error> {
+    let rows =
+        sqlx::query("SELECT id, name, entity_type, properties FROM entities WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(pool)
+            .await?;
+
+    Ok(rows.iter().map(EntityRow::from_row).collect())
 }
 
 /// Insert a new entity. Returns error on duplicate id.
@@ -142,7 +161,12 @@ pub async fn upsert(
 
 /// Insert a stub entity (placeholder for FK constraint satisfaction).
 /// No-op if id exists.
-pub async fn insert_stub(pool: &PgPool, id: &str, name: &str, sources: &[String]) -> Result<(), sqlx::Error> {
+pub async fn insert_stub(
+    pool: &PgPool,
+    id: &str,
+    name: &str,
+    sources: &[String],
+) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"INSERT INTO entities (id, name, entity_type, properties, sources, created_at)
            VALUES ($1, $2, 'stub', $3, $4, NOW())

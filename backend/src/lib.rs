@@ -2,6 +2,7 @@
 //! Re-exports all modules for testing
 
 pub mod api;
+pub mod auth;
 pub mod config;
 pub mod db;
 pub mod dedup;
@@ -34,5 +35,33 @@ impl AppState {
 pub struct Config {
     pub bind_address: String,
     pub database_url: String,
-    pub api_key_header: String,
+    pub auth: crate::auth::AuthMode,
+}
+
+impl Config {
+    pub fn from_env() -> anyhow::Result<Self> {
+        let bind_address =
+            std::env::var("BIND_ADDRESS").unwrap_or_else(|_| "127.0.0.1:8000".into());
+        // API_KEY_HEADER used to be configurable; it is now fixed. Say so
+        // instead of silently answering 401 to clients using a custom name.
+        if let Ok(h) = std::env::var("API_KEY_HEADER") {
+            if !h.eq_ignore_ascii_case(crate::auth::API_KEY_HEADER) {
+                tracing::warn!(
+                    "API_KEY_HEADER={} is ignored: the key header is always {}",
+                    h,
+                    crate::auth::API_KEY_HEADER
+                );
+            }
+        }
+        let auth = crate::auth::AuthMode::from_settings(
+            std::env::var("DISABLE_AUTH").ok().as_deref(),
+            std::env::var("LE_COQ_API_KEY").ok(),
+            &bind_address,
+        )?;
+        Ok(Self {
+            bind_address,
+            database_url: std::env::var("DATABASE_URL")?,
+            auth,
+        })
+    }
 }

@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: le_coq
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,12 +26,11 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/le_coq
       BIND_ADDRESS: 0.0.0.0:8000
-      API_KEY_HEADER: X-API-Key
-      API_KEY: le-coq-dev-key
+      LE_COQ_API_KEY: ${LE_COQ_API_KEY:?LE_COQ_API_KEY must be set (openssl rand -hex 32)}
       PYTHONPATH: /app
       LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
