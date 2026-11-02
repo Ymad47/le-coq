@@ -17,6 +17,16 @@ pub struct EntityData {
     pub properties: serde_json::Value,
     pub sources: Vec<String>,
     pub created_at: Option<String>,
+    /// When the source published it (ISO 8601 / RFC 3339). Feeds the timeline.
+    #[serde(default)]
+    pub published_at: Option<String>,
+}
+
+/// Parses an RFC 3339 timestamp ("2026-03-01T00:30:00Z"); None if absent or invalid.
+pub fn parse_published_at(s: Option<&str>) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(s?)
+        .ok()
+        .map(|d| d.with_timezone(&chrono::Utc))
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -161,6 +171,7 @@ pub async fn ingest_data(
                             &entity.properties,
                             &entity.sources,
                             created_at,
+                            parse_published_at(entity.published_at.as_deref()),
                         )
                         .await
                         {
@@ -306,6 +317,7 @@ pub async fn ingest_from_source(
                     &entity.properties,
                     &entity.sources,
                     created_at,
+                    parse_published_at(entity.published_at.as_deref()),
                 )
                 .await
                 .is_ok()
@@ -337,5 +349,30 @@ fn stub_name_from_id(id: &str) -> String {
         id.to_string()
     } else {
         trimmed.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_utc_timestamp() {
+        let d = parse_published_at(Some("2026-03-01T00:30:00Z")).unwrap();
+        assert_eq!(d.to_rfc3339(), "2026-03-01T00:30:00+00:00");
+    }
+
+    #[test]
+    fn normalizes_offset_to_utc() {
+        let d = parse_published_at(Some("2026-03-01T02:30:00+02:00")).unwrap();
+        assert_eq!(d.to_rfc3339(), "2026-03-01T00:30:00+00:00");
+    }
+
+    #[test]
+    fn rejects_missing_or_invalid() {
+        assert!(parse_published_at(None).is_none());
+        assert!(parse_published_at(Some("")).is_none());
+        assert!(parse_published_at(Some("20260301T003000Z")).is_none()); // raw GDELT format
+        assert!(parse_published_at(Some("yesterday")).is_none());
     }
 }

@@ -11,6 +11,7 @@
   import GraphView from './components/GraphView.svelte';
   import MapView from './components/MapView.svelte';
   import ArticleDrawer from './components/ArticleDrawer.svelte';
+  import TimelineView from './components/TimelineView.svelte';
 
   // === State ===
   let query = '';
@@ -51,6 +52,7 @@
 
   let graphView: GraphView;
   let mapView: MapView;
+  let timelineView: TimelineView;
   let searchInput: HTMLInputElement;
 
   const TABS: { id: View; label: string; key: string; icon: IconName; hint: string }[] = [
@@ -59,6 +61,7 @@
     { id: 'graph', label: 'Graphe', key: '2', icon: 'graph', hint: 'Résultats et leurs voisins directs' },
     { id: 'focus', label: 'Focus', key: '3', icon: 'focus', hint: "Graphe centré sur l'entité recherchée (2 sauts)" },
     { id: 'map', label: 'Carte', key: '4', icon: 'map', hint: "Densité d'entités par pays (toute la base)" },
+    { id: 'timeline', label: 'Chronologie', key: '5', icon: 'timeline', hint: 'Qui a parlé du sujet, et quand' },
   ];
 
   // Each load gets a token; responses from an outdated request are dropped.
@@ -261,6 +264,17 @@
       return;
     }
     if (v === 'map') return loadMap();
+    if (v === 'timeline') {
+      // The timeline loads its own data (on open, or on search)
+      ++requestToken;
+      loading = false;
+      searching = false;
+      if (opts.search) {
+        await tick();
+        await timelineView?.load();
+      }
+      return;
+    }
     if (opts.search) {
       const ok = await runSearch(opts.online ?? ingestOnline);
       if (!ok) return;
@@ -275,7 +289,8 @@
     if (v === view) return;
     writeRoute({ view: v, query });
     // Coming from home with no results yet: run the search the view needs
-    activate(v, { search: v !== 'home' && v !== 'map' && entities.length === 0, online: false });
+    const needsResults = v === 'list' || v === 'graph' || v === 'focus';
+    activate(v, { search: needsResults && entities.length === 0, online: false });
   }
 
   function submitSearch(): void {
@@ -391,7 +406,7 @@
     query = r.query;
     // Restored links only search the local cache: opening a URL must not
     // silently trigger outbound requests to external sources.
-    activate(r.view, { search: r.view !== 'map' && r.view !== 'home', online: false });
+    activate(r.view, { search: r.view === 'list' || r.view === 'graph' || r.view === 'focus', online: false });
   }
 
   onMount(() => {
@@ -482,6 +497,15 @@
         {#if selectedSources.size && ingestOnline}<span class="badge">{selectedSources.size} sources</span>{/if}
       </button>
       <aside class="sidebar" id="filters" class:open={filtersOpen} aria-label="Filtres">
+        {#if view === 'timeline'}
+          <section class="side-block">
+            <div class="side-head"><h2 class="eyebrow">Chronologie</h2></div>
+            <p class="hint">
+              Source : GDELT (presse mondiale, mise à jour toutes les 15 minutes). Choisissez la période
+              dans la barre de la vue, puis « Interroger GDELT ».
+            </p>
+          </section>
+        {:else}
         <section class="side-block">
           <div class="side-head">
             <h2 class="eyebrow">Recherche</h2>
@@ -522,6 +546,8 @@
           </div>
         </section>
 
+        {/if}
+
         {#if view === 'list' && typeCounts.length}
           <section class="side-block">
             <div class="side-head">
@@ -543,7 +569,7 @@
         {/if}
 
         <p class="shortcuts">
-          <kbd>/</kbd> rechercher · <kbd>0</kbd>–<kbd>4</kbd> vues · <kbd>Échap</kbd> fermer
+          <kbd>/</kbd> rechercher · <kbd>0</kbd>–<kbd>5</kbd> vues · <kbd>Échap</kbd> fermer
         </p>
       </aside>
 
@@ -585,6 +611,8 @@
             on:suggest={(e) => searchFor(e.detail.query, { online: true })}
             on:clearFilters={() => (hiddenTypes = new Set())}
           />
+        {:else if view === 'timeline'}
+          <TimelineView bind:this={timelineView} {query} />
         {:else if view === 'map'}
           <MapView bind:this={mapView} entities={mapEntities} on:countrySelected={(e) => (mapInfo = e.detail)} />
 

@@ -48,6 +48,13 @@
       title: 'Carte',
       text: "La densité d'entités par pays sur toute la base, pour voir où l'information se concentre.",
     },
+    {
+      id: 'timeline',
+      key: '5',
+      icon: 'timeline',
+      title: 'Chronologie',
+      text: "Qui a parlé d'un événement, et quand : les articles jour par jour, par média et par pays.",
+    },
   ];
 
   const PRINCIPLES = [
@@ -167,7 +174,7 @@
   <section class="section" aria-labelledby="views-title">
     <header class="section-head">
       <span class="eyebrow">Explorer</span>
-      <h2 id="views-title">Quatre façons de lire les données</h2>
+      <h2 id="views-title">Cinq façons de lire les données</h2>
     </header>
     <div class="views">
       {#each VIEWS as v}
@@ -411,7 +418,7 @@
 
   .views {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 0.75rem;
   }
 
@@ -545,6 +552,10 @@
 
     .views {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .views > :global(:last-child) {
+      grid-column: 1 / -1;
     }
 
     .principles {

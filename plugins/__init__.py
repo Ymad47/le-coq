@@ -58,6 +58,8 @@ class Entity(BaseModel):
     properties: Dict[str, Any] = {}
     sources: List[str] = []
     created_at: datetime = None
+    # When the source published it (ISO 8601, UTC). Used by the timeline.
+    published_at: Optional[str] = None
     
     class Config:
         arbitrary_types_allowed = True

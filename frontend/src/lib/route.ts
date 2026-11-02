@@ -3,7 +3,7 @@
 
 import type { View } from './types';
 
-const VIEWS: View[] = ['home', 'list', 'graph', 'focus', 'map'];
+const VIEWS: View[] = ['home', 'list', 'graph', 'focus', 'map', 'timeline'];
 
 export interface RouteState {
   view: View;

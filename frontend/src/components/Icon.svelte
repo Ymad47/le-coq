@@ -19,6 +19,7 @@
     info: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm0 8v5m0-8h.01',
     expand: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5',
     globe: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18Zm-9 9h18',
+    timeline: 'M5 4v16M5 7h9M5 12h13M5 17h6M14 7h.01M18 12h.01M11 17h.01',
   } as const;
 
   export type IconName = keyof typeof PATHS;

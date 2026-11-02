@@ -133,16 +133,22 @@ pub async fn upsert(
     properties: &Value,
     sources: &[String],
     created_at: Option<chrono::NaiveDateTime>,
+    published_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<bool, sqlx::Error> {
+    // published_at: never erased by a later ingest that lacks it.
+    // collected_at: first time Le Coq collected the item, kept on updates.
     let result = sqlx::query(
-        r#"INSERT INTO entities (id, name, entity_type, aliases, properties, sources, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamp, NOW()))
+        r#"INSERT INTO entities
+               (id, name, entity_type, aliases, properties, sources, created_at, published_at, collected_at)
+           VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamp, NOW()), $8, NOW())
            ON CONFLICT (id) DO UPDATE SET
                name = EXCLUDED.name,
                entity_type = EXCLUDED.entity_type,
                aliases = EXCLUDED.aliases,
                properties = EXCLUDED.properties,
                sources = EXCLUDED.sources,
+               published_at = COALESCE(EXCLUDED.published_at, entities.published_at),
+               collected_at = COALESCE(entities.collected_at, EXCLUDED.collected_at),
                updated_at = NOW()
            RETURNING (xmax = 0) AS inserted"#,
     )
@@ -153,6 +159,7 @@ pub async fn upsert(
     .bind(sqlx::types::Json(properties))
     .bind(sources)
     .bind(created_at)
+    .bind(published_at)
     .fetch_one(pool)
     .await?;
 

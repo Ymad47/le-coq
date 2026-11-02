@@ -67,7 +67,30 @@ export interface ArticleRelation {
   outgoing: boolean;
 }
 
-export type View = 'home' | 'list' | 'graph' | 'focus' | 'map';
+export type View = 'home' | 'list' | 'graph' | 'focus' | 'map' | 'timeline';
+
+/** One dated article on the timeline (GET /api/v1/timeline). */
+export interface TimelineArticle {
+  id: string;
+  title: string;
+  url: string;
+  domain: string;
+  source_country: string;
+  language: string;
+  /** ISO 8601, UTC. For GDELT: when GDELT first saw the article. */
+  published_at: string;
+}
+
+export interface TimelineResponse {
+  query: string;
+  from: string | null;
+  to: string | null;
+  count: number;
+  truncated: boolean;
+  ingested: number;
+  errors: string[];
+  articles: TimelineArticle[];
+}
 
 export interface Neighborhood {
   seeds: string[];

@@ -1,5 +1,5 @@
 // API client for Le Coq backend
-import type { Entity, Relationship, SearchResponse, EntitySummary, Neighborhood } from './types';
+import type { Entity, Relationship, SearchResponse, EntitySummary, Neighborhood, TimelineResponse } from './types';
 
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   const resp = await fetch(path, opts);
@@ -47,6 +47,23 @@ export async function checkHealth(): Promise<string> {
   const resp = await fetch('/health');
   if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
   return (await resp.text()).trim();
+}
+
+/**
+ * Dated articles about `q`, oldest first. With `online`, the backend first
+ * fetches the period from GDELT (slow: GDELT allows ~1 request / 5 s).
+ * `from` / `to` are inclusive days, YYYY-MM-DD.
+ */
+export async function getTimeline(
+  q: string,
+  opts: { from?: string; to?: string; online?: boolean; limit?: number } = {}
+): Promise<TimelineResponse> {
+  const params = new URLSearchParams({ q: q.trim() });
+  if (opts.from) params.set('from', opts.from);
+  if (opts.to) params.set('to', opts.to);
+  if (opts.online) params.set('online', 'true');
+  if (opts.limit) params.set('limit', String(opts.limit));
+  return api<TimelineResponse>(`/api/v1/timeline?${params}`);
 }
 
 /** Backend cap on seed ids per neighborhood request. */

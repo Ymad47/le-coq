@@ -230,6 +230,7 @@ impl Poller {
                 &properties,
                 &sources,
                 created_at,
+                None, // the poller's input format has no publication date
             )
             .await
             {

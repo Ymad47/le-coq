@@ -29,6 +29,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/search", get(smart_search).post(search))
         .route("/api/v1/topic", get(topic_search))
         .route("/api/v1/graph/neighborhood", post(graph_neighborhood))
+        .route("/api/v1/timeline", get(timeline))
         .route("/api/v1/ingest", post(ingest_data))
         .route("/api/v1/sources", get(list_sources))
         .route("/api/v1/plugins/health", get(plugins_health))
@@ -954,6 +955,228 @@ mod neighborhood_tests {
         assert_eq!(
             validate_neighborhood(req(&["a"], Some(99_999))).unwrap().1,
             5000
+        );
+    }
+}
+
+// ============================================================
+// GET /api/v1/timeline — dated articles about a topic, oldest first
+// ============================================================
+
+const TIMELINE_MAX_QUERY_LEN: usize = 200;
+const TIMELINE_DEFAULT_LIMIT: u32 = 500;
+const TIMELINE_MAX_LIMIT: u32 = 2000;
+/// GDELT DOC API maximum per call.
+const TIMELINE_FETCH_LIMIT: u32 = 250;
+
+#[derive(Deserialize)]
+struct TimelineQuery {
+    q: String,
+    /// Inclusive start day, YYYY-MM-DD (UTC).
+    #[serde(default)]
+    from: Option<String>,
+    /// Inclusive end day, YYYY-MM-DD (UTC).
+    #[serde(default)]
+    to: Option<String>,
+    /// Fetch articles for the period from GDELT before answering.
+    #[serde(default)]
+    online: Option<bool>,
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+#[derive(Debug, PartialEq)]
+struct TimelineParams {
+    q: String,
+    from: Option<chrono::NaiveDate>,
+    to: Option<chrono::NaiveDate>,
+    online: bool,
+    limit: i64,
+}
+
+fn parse_day(field: &str, value: Option<String>) -> Result<Option<chrono::NaiveDate>, String> {
+    match value.as_deref().map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(s) => chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+            .map(Some)
+            .map_err(|_| format!("{field} must be a date in YYYY-MM-DD format")),
+    }
+}
+
+/// Validates the request. Pure function so it can be tested without a database.
+fn validate_timeline(req: TimelineQuery) -> Result<TimelineParams, String> {
+    let q = req.q.trim().to_string();
+    if q.is_empty() {
+        return Err("q is required".into());
+    }
+    if q.chars().count() > TIMELINE_MAX_QUERY_LEN {
+        return Err(format!(
+            "q must be at most {TIMELINE_MAX_QUERY_LEN} characters"
+        ));
+    }
+    let from = parse_day("from", req.from)?;
+    let to = parse_day("to", req.to)?;
+    if let (Some(f), Some(t)) = (from, to) {
+        if f > t {
+            return Err("from must be on or before to".into());
+        }
+    }
+    let limit = req
+        .limit
+        .unwrap_or(TIMELINE_DEFAULT_LIMIT)
+        .clamp(1, TIMELINE_MAX_LIMIT);
+    Ok(TimelineParams {
+        q,
+        from,
+        to,
+        online: req.online.unwrap_or(false),
+        limit: i64::from(limit),
+    })
+}
+
+fn day_start_utc(d: chrono::NaiveDate) -> chrono::DateTime<chrono::Utc> {
+    d.and_hms_opt(0, 0, 0)
+        .expect("midnight is a valid time")
+        .and_utc()
+}
+
+async fn timeline(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(req): axum::extract::Query<TimelineQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let p = validate_timeline(req).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
+    let mut ingested = 0usize;
+    let mut errors: Vec<String> = Vec::new();
+    if p.online {
+        let mut args = serde_json::json!({ "q": p.q, "limit": TIMELINE_FETCH_LIMIT });
+        if let Some(f) = p.from {
+            args["start"] = serde_json::json!(f.format("%Y-%m-%d").to_string());
+        }
+        if let Some(t) = p.to {
+            args["end"] = serde_json::json!(t.format("%Y-%m-%d").to_string());
+        }
+        match crate::ingestion::ingest_from_source(state.clone(), "gdelt", args).await {
+            Ok((n, errs)) => {
+                ingested = n;
+                errors.extend(errs);
+            }
+            Err(e) => errors.push(format!("gdelt: {e}")),
+        }
+    }
+
+    // `to` is inclusive: the window ends at the start of the next day
+    let from = p.from.map(day_start_utc);
+    let to = p.to.and_then(|d| d.succ_opt()).map(day_start_utc);
+    let mut rows = db::timeline::articles(&state.postgres, &p.q, from, to, p.limit)
+        .await
+        .map_err(|e| {
+            tracing::error!("timeline DB error: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
+        })?;
+    let truncated = rows.len() as i64 > p.limit;
+    rows.truncate(p.limit as usize);
+
+    let prop = |r: &db::timeline::TimelineRow, k: &str| {
+        r.properties
+            .get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let articles: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "title": r.title,
+                "url": prop(r, "url"),
+                "domain": prop(r, "domain"),
+                "source_country": prop(r, "source_country"),
+                "language": prop(r, "language"),
+                "published_at": r.published_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "query": p.q,
+        "from": p.from.map(|d| d.to_string()),
+        "to": p.to.map(|d| d.to_string()),
+        "count": articles.len(),
+        "truncated": truncated,
+        "ingested": ingested,
+        "errors": errors,
+        "articles": articles,
+    })))
+}
+
+#[cfg(test)]
+mod timeline_tests {
+    use super::*;
+
+    fn req(q: &str, from: Option<&str>, to: Option<&str>, limit: Option<u32>) -> TimelineQuery {
+        TimelineQuery {
+            q: q.into(),
+            from: from.map(String::from),
+            to: to.map(String::from),
+            online: None,
+            limit,
+        }
+    }
+
+    #[test]
+    fn accepts_valid_range() {
+        let p = validate_timeline(req(
+            " Johannesburg march ",
+            Some("2026-03-01"),
+            Some("2026-03-31"),
+            None,
+        ))
+        .unwrap();
+        assert_eq!(p.q, "Johannesburg march");
+        assert_eq!(p.from.unwrap().to_string(), "2026-03-01");
+        assert_eq!(p.limit, 500);
+        assert!(!p.online);
+    }
+
+    #[test]
+    fn dates_are_optional() {
+        let p = validate_timeline(req("x", None, Some(""), None)).unwrap();
+        assert!(p.from.is_none() && p.to.is_none());
+    }
+
+    #[test]
+    fn rejects_bad_input() {
+        assert!(validate_timeline(req("  ", None, None, None)).is_err());
+        assert!(validate_timeline(req(&"a".repeat(201), None, None, None)).is_err());
+        assert!(validate_timeline(req("x", Some("2026-02-30"), None, None)).is_err());
+        assert!(validate_timeline(req("x", Some("01/03/2026"), None, None)).is_err());
+        assert!(validate_timeline(req("x", Some("2026-03-31"), Some("2026-03-01"), None)).is_err());
+    }
+
+    #[test]
+    fn clamps_limit() {
+        assert_eq!(
+            validate_timeline(req("x", None, None, Some(0)))
+                .unwrap()
+                .limit,
+            1
+        );
+        assert_eq!(
+            validate_timeline(req("x", None, None, Some(99_999)))
+                .unwrap()
+                .limit,
+            2000
+        );
+    }
+
+    #[test]
+    fn end_day_is_inclusive() {
+        let to = chrono::NaiveDate::from_ymd_opt(2026, 3, 31).unwrap();
+        assert_eq!(
+            day_start_utc(to.succ_opt().unwrap()).to_rfc3339(),
+            "2026-04-01T00:00:00+00:00"
         );
     }
 }

@@ -9,8 +9,11 @@ API: https://api.gdeltproject.org/api/v2/doc/doc
 """
 
 import asyncio
+import re
+from datetime import datetime
+
 import aiohttp
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Optional
 from plugins import DataSourcePlugin, Entity, register_plugin
 
 
@@ -57,6 +60,9 @@ class GDELTPlugin(DataSourcePlugin):
         """Rate-limited GET with exponential backoff. GDELT: 1 req / 5s."""
         import json as _json
         headers = {"User-Agent": self.USER_AGENT, "Accept": "application/json"}
+        # Why the last attempt failed, so fetch() can report it instead of
+        # returning an empty result that looks like "no articles".
+        self._last_error = "no response"
         for attempt in range(max_retries):
             try:
                 await asyncio.sleep(5 * (2 ** attempt))
@@ -65,18 +71,23 @@ class GDELTPlugin(DataSourcePlugin):
                 ) as resp:
                     content = await resp.text()
                     if resp.status == 429 or "Please limit requests" in content:
+                        self._last_error = "rate limited by GDELT (max 1 request / 5 s)"
                         continue
                     if resp.status != 200:
+                        self._last_error = f"HTTP {resp.status}"
                         print(f"GDELT HTTP {resp.status}")
                         return None
                     try:
                         return _json.loads(content)
                     except _json.JSONDecodeError:
+                        self._last_error = "invalid JSON response"
                         print(f"GDELT invalid JSON: {content[:200]}")
                         return None
             except asyncio.TimeoutError:
+                self._last_error = "timeout"
                 continue
             except Exception as e:
+                self._last_error = f"network error: {e}"
                 print(f"GDELT error: {e}")
                 return None
         return None
@@ -97,9 +108,35 @@ class GDELTPlugin(DataSourcePlugin):
         except Exception:
             return False
 
+    # GDELT DOC API returns at most 250 records per call
+    MAX_RECORDS = 250
+
+    @staticmethod
+    def _gdelt_datetime(day: Any, end_of_day: bool) -> str:
+        """'2026-03-14' -> '20260314000000' (or ...235959). Empty string if invalid."""
+        if not isinstance(day, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            return ""
+        try:
+            datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            return ""
+        return day.replace("-", "") + ("235959" if end_of_day else "000000")
+
+    @staticmethod
+    def _iso_from_seendate(seendate: Any) -> Optional[str]:
+        """GDELT '20260301T003000Z' -> ISO 8601 '2026-03-01T00:30:00Z'."""
+        if not isinstance(seendate, str):
+            return None
+        try:
+            return datetime.strptime(seendate, "%Y%m%dT%H%M%SZ").strftime("%Y-%m-%dT%H:%M:%SZ")
+        except ValueError:
+            return None
+
     async def fetch(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Search recent news articles matching query.
+        Search news articles matching query.
+        Optional 'start' / 'end' ('YYYY-MM-DD') restrict to a period; without them GDELT
+        only searches roughly the last 3 months.
         Returns: 1 entity per article + relation to the queried entity (if country detected).
         """
         results: List[Dict[str, Any]] = []
@@ -107,19 +144,30 @@ class GDELTPlugin(DataSourcePlugin):
         if not search_query.strip():
             return results
 
+        try:
+            limit = int(query.get("limit", 50))
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(limit, self.MAX_RECORDS))
+
         params = {
             "query": search_query,
             "format": "json",
             "mode": "artlist",
-            "maxrecords": str(query.get("limit", 50)),
+            "maxrecords": str(limit),
             "sourcelang": query.get("lang", ""),  # optional filter: 'french', 'english', ...
+            "startdatetime": self._gdelt_datetime(query.get("start"), end_of_day=False),
+            "enddatetime": self._gdelt_datetime(query.get("end"), end_of_day=True),
         }
         params = {k: v for k, v in params.items() if v}
 
         async with aiohttp.ClientSession() as session:
             data = await self._rate_limited_request(session, self.BASE_URL, params)
-        if not data or "articles" not in data:
-            return results
+        if data is None:
+            # A failed call must not look like "nothing was published"
+            raise RuntimeError(f"GDELT unavailable: {getattr(self, '_last_error', 'unknown error')}")
+        if "articles" not in data:
+            return results  # GDELT answered: genuinely no matching article
 
         # Detect queried country to link articles back to it
         detected_country_iso = self.COUNTRY_TO_ISO.get(search_query.title())
@@ -178,6 +226,7 @@ class GDELTPlugin(DataSourcePlugin):
                         "query": search_query,
                     },
                     sources=[url, "https://www.gdeltproject.org/"],
+                    published_at=self._iso_from_seendate(seendate),
                 ).model_dump()
             )
 
