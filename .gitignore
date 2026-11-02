@@ -46,3 +46,6 @@ venv/
 node_modules/
 dist/.lecoq-state/
 frontend/dist/
+
+# Personal notes
+personal/

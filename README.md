@@ -7,8 +7,8 @@
 
 Le Coq collects open-source data (GDELT, ACLED, Wikidata, Wikipedia, company
 registries, trade statistics…) through Python plugins, stores entities and
-relationships in PostgreSQL, and explores them through a list, graph, map and
-timeline UI.
+relationships in PostgreSQL, and explores them through a list, graph and map
+UI. A timeline view is in progress.
 
 **Status:** early development, intended for local / homelab use. Not hardened
 for public exposure — see [Security](#security).
@@ -22,7 +22,7 @@ for public exposure — see [Security](#security).
 | **Backend** | Rust, Axum 0.7, SQLx 0.7 | REST API, embedded SQL migrations |
 | **Plugins** | Python 3.11, embedded via PyO3 | OSINT data sources |
 | **Database** | PostgreSQL 16 (pgvector image) | Entities, relationships, full-text search |
-| **Frontend** | Svelte 4, Vite 5, TypeScript | List, graph (Cytoscape), map (jsvectormap), timeline |
+| **Frontend** | Svelte 4, Vite 5, TypeScript | List, graph (Cytoscape), map (jsvectormap) |
 | **CLI** | Zig | Experimental |
 
 Not implemented yet (planned): Neo4j, Meilisearch, RAG / vector search, graph
@@ -128,7 +128,6 @@ All `/api/v1/*` routes require the `X-API-Key` header. `/health` is public.
 | POST | `/api/v1/search` | Full-text search |
 | GET | `/api/v1/topic` | Topic search |
 | POST | `/api/v1/graph/neighborhood` | Graph neighborhood of an entity |
-| GET | `/api/v1/timeline` | Timeline events *(in progress, `feat/timeline`)* |
 | POST | `/api/v1/ingest` | Run ingestion from a plugin |
 | GET | `/api/v1/sources` | List data sources |
 | GET | `/api/v1/plugins/health` | Plugin status |
@@ -167,7 +166,7 @@ le-coq/
 │       ├── main.rs, lib.rs, config.rs
 │       ├── api.rs          # Routes and handlers
 │       ├── auth.rs         # X-API-Key middleware
-│       ├── db/             # entities, relationships, search, summary, timeline
+│       ├── db/             # entities, relationships, search, summary
 │       ├── ingestion.rs, dedup.rs
 │       ├── plugin_bridge.rs # PyO3 bridge to Python plugins
 │       ├── poller.rs       # Background poller (not started yet)
@@ -238,5 +237,5 @@ More: [`docs/SECURITY.md`](docs/SECURITY.md),
 
 ## Contact
 
-- **Repo:** https://github.com/Ymad47/le-coq (private — contact maintainer for access)
+- **Repo:** https://github.com/Ymad47/le-coq
 - **Email:** ymad@ymad.fr
