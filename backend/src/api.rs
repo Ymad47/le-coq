@@ -562,7 +562,7 @@ async fn smart_search(
                     let q_c = q_cl.clone();
                     async move {
                         let ingest_fut =
-                            ingest_from_source(state_c, &src_c, serde_json::json!({"query": q_c}));
+                            ingest_from_source(state_c, &src_c, serde_json::json!({"q": q_c}));
                         match tokio::time::timeout(std::time::Duration::from_secs(30), ingest_fut)
                             .await
                         {
@@ -1185,24 +1185,55 @@ mod timeline_tests {
 // GET /api/v1/plugins/health + POST /api/v1/plugins/reload
 // ============================================================
 
-async fn plugins_health() -> Json<serde_json::Value> {
-    let loaded = crate::plugin_bridge::list_plugins().unwrap_or_default();
-    let failures = crate::plugin_bridge::plugin_failures()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(name, err)| serde_json::json!({ "name": name, "error": err }))
-        .collect::<Vec<_>>();
-    Json(serde_json::json!({
-        "loaded": loaded,
-        "failed": failures,
-    }))
+/// 200 with loaded/failed plugins, or 503 when the `plugins` package itself
+/// cannot be imported (missing dependencies, wrong LE_COQ_ROOT).
+async fn plugins_health() -> (StatusCode, Json<serde_json::Value>) {
+    let report = crate::ingestion::run_python(|| {
+        let loaded = crate::plugin_bridge::list_plugins()?;
+        let failures = crate::plugin_bridge::plugin_failures()?;
+        Ok((loaded, failures))
+    })
+    .await;
+    match report {
+        Ok((loaded, failures)) => {
+            let failures = failures
+                .into_iter()
+                .map(|(name, err)| serde_json::json!({ "name": name, "error": err }))
+                .collect::<Vec<_>>();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "loaded": loaded,
+                    "failed": failures,
+                })),
+            )
+        }
+        Err(e) => {
+            tracing::error!("plugin system unavailable: {}", e);
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({
+                    "loaded": [],
+                    "failed": [],
+                    "error": e,
+                })),
+            )
+        }
+    }
 }
 
 async fn plugins_reload() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    match crate::plugin_bridge::reload_plugins() {
-        Ok(loaded) => {
-            let failures = crate::plugin_bridge::plugin_failures()
-                .unwrap_or_default()
+    let reloaded = crate::ingestion::run_python(|| {
+        let loaded = crate::plugin_bridge::reload_plugins()?;
+        Ok((
+            loaded,
+            crate::plugin_bridge::plugin_failures().unwrap_or_default(),
+        ))
+    })
+    .await;
+    match reloaded {
+        Ok((loaded, failures)) => {
+            let failures = failures
                 .into_iter()
                 .map(|(name, err)| serde_json::json!({ "name": name, "error": err }))
                 .collect::<Vec<_>>();

@@ -42,185 +42,33 @@ pub struct IngestionResponse {
     pub success: bool,
     pub message: String,
     pub data: Option<Value>,
+    /// Entities upserted + relationships newly inserted.
+    #[serde(default)]
+    pub inserted: usize,
+    /// Items that could not be stored (parse or database errors).
+    #[serde(default)]
+    pub errors: Vec<String>,
 }
 
-pub async fn ingest_data(
-    State(state): State<Arc<AppState>>,
-    Json(payload): Json<IngestionRequest>,
-) -> Result<Json<IngestionResponse>, (StatusCode, String)> {
-    tracing::info!("Ingesting data from source: {}", payload.source);
-
-    // Validate the source exists
-    let plugins = list_plugins().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to list plugins: {}", e),
-        )
-    })?;
-
-    if !plugins.contains(&payload.source) {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!("Unknown source: {}", payload.source),
-        ));
-    }
-
-    // Call the Python plugin
-    let result = call_plugin_method(&payload.source, "fetch", &payload.query).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to call plugin: {}", e),
-        )
-    })?;
-
-    if result.success {
-        // Parse and store the data in the database
-        let entities_data = result.data.clone().unwrap_or(Value::Array(vec![]));
-
-        if let Value::Array(items) = entities_data {
-            tracing::info!("Attempting to store {} items", items.len());
-
-            for item in items {
-                // Distingue entité vs relation par présence de from_entity/to_entity
-                let is_relation =
-                    item.get("from_entity").is_some() && item.get("to_entity").is_some();
-
-                if is_relation {
-                    let from = item
-                        .get("from_entity")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let to = item.get("to_entity").and_then(|v| v.as_str()).unwrap_or("");
-                    let rel_type = item
-                        .get("relationship_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("related_to");
-                    let confidence = item
-                        .get("confidence")
-                        .and_then(|v| v.as_f64())
-                        .unwrap_or(1.0) as f32;
-                    let properties = item
-                        .get("properties")
-                        .cloned()
-                        .unwrap_or(Value::Object(serde_json::Map::new()));
-                    let sources: Vec<String> = item
-                        .get("sources")
-                        .and_then(|v| v.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                    // Stub endpoints to satisfy FK (insert_stub via db module)
-                    for endpoint in [from, to] {
-                        if endpoint.is_empty() {
-                            continue;
-                        }
-                        let _ = db::entities::insert_stub(
-                            &state.postgres,
-                            endpoint,
-                            &stub_name_from_id(endpoint),
-                            &sources,
-                        )
-                        .await;
-                    }
-
-                    let rel = db::relationships::insert(
-                        &state.postgres,
-                        from,
-                        to,
-                        rel_type,
-                        &properties,
-                        Some(confidence),
-                        &sources,
-                    )
-                    .await;
-                    match rel {
-                        Ok((_id, true)) => {
-                            tracing::info!("Relation: {} -[{}]-> {}", from, rel_type, to)
-                        }
-                        Ok((_id, false)) => tracing::debug!(
-                            "Relation exists, skipped: {} -[{}]-> {}",
-                            from,
-                            rel_type,
-                            to
-                        ),
-                        Err(e) => {
-                            tracing::error!("Failed to insert relation {}->{}: {}", from, to, e)
-                        }
-                    }
-                    continue;
-                }
-
-                match serde_json::from_value::<EntityData>(item.clone()) {
-                    Ok(entity) => {
-                        tracing::info!("Inserting entity: {} ({})", entity.id, entity.name);
-
-                        let created_at = entity
-                            .created_at
-                            .and_then(|s| s.parse::<chrono::NaiveDateTime>().ok());
-
-                        match db::entities::upsert(
-                            &state.postgres,
-                            &entity.id,
-                            &entity.name,
-                            &entity.entity_type,
-                            &entity.aliases,
-                            &entity.properties,
-                            &entity.sources,
-                            created_at,
-                            parse_published_at(entity.published_at.as_deref()),
-                        )
-                        .await
-                        {
-                            Ok(_) => tracing::info!("Successfully inserted {}", entity.id),
-                            Err(e) => tracing::error!("Failed to insert {}: {}", entity.id, e),
-                        }
-                    }
-                    Err(e) => tracing::error!("Failed to parse entity: {}", e),
-                }
-            }
-        }
-
-        Ok(Json(IngestionResponse {
-            success: true,
-            message: "Data ingested successfully".to_string(),
-            data: result.data,
-        }))
-    } else {
-        Err((
-            StatusCode::BAD_REQUEST,
-            result
-                .error
-                .unwrap_or_else(|| "Plugin execution failed".to_string()),
-        ))
-    }
+/// Runs a synchronous PyO3 call on the blocking thread pool.
+/// Plugin calls hold the GIL and run their own asyncio loop for seconds; on a
+/// tokio worker they would stall every other request scheduled on that thread,
+/// and `tokio::time::timeout` could not fire until they returned.
+pub(crate) async fn run_python<T, F>(f: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| format!("plugin task failed: {}", e))?
 }
 
-pub async fn list_sources(
-    State(_state): State<Arc<AppState>>,
-) -> Result<Json<Vec<String>>, (StatusCode, String)> {
-    let plugins = list_plugins().map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Failed to list plugins: {}", e),
-        )
-    })?;
-
-    Ok(Json(plugins))
-}
-
-/// Core ingestion logic reusable from other handlers (e.g. smart search).
-/// Fetches from source, upserts entities/relations in DB.
-/// Returns (count of inserted items, list of per-relation drop errors).
-pub async fn ingest_from_source(
-    state: Arc<AppState>,
-    source: &str,
-    query: Value,
-) -> Result<(usize, Vec<String>), String> {
-    let result = call_plugin_method(source, "fetch", &query)
+/// Calls `<source>.fetch(query)` and returns the items it produced.
+async fn fetch_items(source: &str, query: Value) -> Result<Vec<Value>, String> {
+    let src = source.to_string();
+    let result = run_python(move || call_plugin_method(&src, "fetch", &query))
+        .await
         .map_err(|e| format!("Failed to call plugin {}: {}", source, e))?;
 
     if !result.success {
@@ -228,12 +76,43 @@ pub async fn ingest_from_source(
             .error
             .unwrap_or_else(|| "Plugin execution failed".to_string()));
     }
+    match result.data {
+        Some(Value::Array(items)) => Ok(items),
+        Some(Value::Null) | None => Ok(Vec::new()),
+        Some(other) => Err(format!(
+            "plugin {} returned {} instead of a list",
+            source,
+            json_type_name(&other)
+        )),
+    }
+}
 
-    let items = result.data.unwrap_or(Value::Array(vec![]));
-    let Value::Array(items) = items else {
-        return Ok((0, Vec::new()));
-    };
+fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "a list",
+        Value::Object(_) => "an object",
+    }
+}
 
+fn string_list(item: &Value, key: &str) -> Vec<String> {
+    item.get(key)
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Stores plugin items: an item with `from_entity` + `to_entity` is a
+/// relationship, anything else must parse as an [`EntityData`].
+/// Returns the number of rows written and one message per item that failed.
+pub async fn store_items(state: &AppState, items: &[Value]) -> (usize, Vec<String>) {
     let mut inserted = 0usize;
     let mut errors: Vec<String> = Vec::new();
 
@@ -246,55 +125,50 @@ pub async fn ingest_from_source(
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             let to = item.get("to_entity").and_then(|v| v.as_str()).unwrap_or("");
+            if from.is_empty() || to.is_empty() {
+                errors.push("relation with an empty endpoint skipped".to_string());
+                continue;
+            }
             let rel_type = item
                 .get("relationship_type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("related_to");
+            // Absent confidence stays NULL ("unknown"), see migration 003.
             let confidence = item
                 .get("confidence")
                 .and_then(|v| v.as_f64())
-                .unwrap_or(1.0) as f32;
+                .map(|c| c as f32);
             let properties = item
                 .get("properties")
                 .cloned()
                 .unwrap_or(Value::Object(serde_json::Map::new()));
-            let sources: Vec<String> = item
-                .get("sources")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let sources = string_list(item, "sources");
 
             // Ensure endpoint entities exist (FK constraint on relationships).
             for endpoint in [from, to] {
-                if endpoint.is_empty() {
-                    continue;
-                }
                 let name = stub_name_from_id(endpoint);
-                let _ = db::entities::insert_stub(&state.postgres, endpoint, &name, &sources).await;
+                if let Err(e) =
+                    db::entities::insert_stub(&state.postgres, endpoint, &name, &sources).await
+                {
+                    tracing::warn!("stub entity {} not created: {}", endpoint, e);
+                }
             }
 
-            let rel = db::relationships::insert(
+            match db::relationships::insert(
                 &state.postgres,
                 from,
                 to,
                 rel_type,
                 &properties,
-                Some(confidence),
+                confidence,
                 &sources,
             )
-            .await;
-            match rel {
-                Ok((_id, inserted_flag)) => {
-                    if inserted_flag {
-                        inserted += 1;
-                    }
-                }
+            .await
+            {
+                Ok((_id, true)) => inserted += 1,
+                Ok((_id, false)) => {} // already known
                 Err(e) => {
-                    let msg = format!("relation {} -> {}: {}", from, to, e);
+                    let msg = format!("relation {} -[{}]-> {}: {}", from, rel_type, to, e);
                     tracing::warn!("ingest relation dropped: {}", msg);
                     errors.push(msg);
                 }
@@ -302,34 +176,116 @@ pub async fn ingest_from_source(
             continue;
         }
 
-        match serde_json::from_value::<EntityData>(item.clone()) {
-            Ok(entity) => {
-                let created_at = entity
-                    .created_at
-                    .and_then(|s| s.parse::<chrono::NaiveDateTime>().ok());
-
-                if db::entities::upsert(
-                    &state.postgres,
-                    &entity.id,
-                    &entity.name,
-                    &entity.entity_type,
-                    &entity.aliases,
-                    &entity.properties,
-                    &entity.sources,
-                    created_at,
-                    parse_published_at(entity.published_at.as_deref()),
-                )
-                .await
-                .is_ok()
-                {
-                    inserted += 1;
-                }
+        let entity = match serde_json::from_value::<EntityData>(item.clone()) {
+            Ok(e) => e,
+            Err(e) => {
+                let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                let msg = format!("entity {}: invalid shape: {}", id, e);
+                tracing::warn!("ingest entity dropped: {}", msg);
+                errors.push(msg);
+                continue;
             }
-            Err(e) => tracing::error!("Failed to parse entity: {}", e),
+        };
+        let created_at = entity
+            .created_at
+            .as_deref()
+            .and_then(|s| s.parse::<chrono::NaiveDateTime>().ok());
+
+        match db::entities::upsert(
+            &state.postgres,
+            &entity.id,
+            &entity.name,
+            &entity.entity_type,
+            &entity.aliases,
+            &entity.properties,
+            &entity.sources,
+            created_at,
+            parse_published_at(entity.published_at.as_deref()),
+        )
+        .await
+        {
+            Ok(_) => inserted += 1,
+            Err(e) => {
+                let msg = format!("entity {}: {}", entity.id, e);
+                tracing::warn!("ingest entity dropped: {}", msg);
+                errors.push(msg);
+            }
         }
     }
 
-    Ok((inserted, errors))
+    (inserted, errors)
+}
+
+/// POST /api/v1/ingest — fetch from one plugin and store the result.
+pub async fn ingest_data(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<IngestionRequest>,
+) -> Result<Json<IngestionResponse>, (StatusCode, String)> {
+    tracing::info!("Ingesting data from source: {}", payload.source);
+
+    let plugins = run_python(list_plugins).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to list plugins: {}", e),
+        )
+    })?;
+    if !plugins.contains(&payload.source) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("Unknown source: {}", payload.source),
+        ));
+    }
+
+    // A plugin error (bad credentials, upstream failure) is not a server bug.
+    let items = fetch_items(&payload.source, payload.query)
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e))?;
+
+    tracing::info!("Attempting to store {} items", items.len());
+    let (inserted, errors) = store_items(&state, &items).await;
+    if !errors.is_empty() {
+        tracing::warn!(
+            "{} of {} items from {} not stored",
+            errors.len(),
+            items.len(),
+            payload.source
+        );
+    }
+
+    Ok(Json(IngestionResponse {
+        success: true,
+        message: if errors.is_empty() {
+            "Data ingested successfully".to_string()
+        } else {
+            format!("Data ingested with {} errors", errors.len())
+        },
+        data: Some(Value::Array(items)),
+        inserted,
+        errors,
+    }))
+}
+
+pub async fn list_sources(
+    State(_state): State<Arc<AppState>>,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    let plugins = run_python(list_plugins).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to list plugins: {}", e),
+        )
+    })?;
+    Ok(Json(plugins))
+}
+
+/// Fetch from one plugin and store the result. Used by online search and the
+/// timeline. Returns rows written and per-item errors.
+pub async fn ingest_from_source(
+    state: Arc<AppState>,
+    source: &str,
+    query: Value,
+) -> Result<(usize, Vec<String>), String> {
+    let items = fetch_items(source, query).await?;
+    Ok(store_items(&state, &items).await)
 }
 
 /// Human-readable stub name derived from a plugin-generated entity id.

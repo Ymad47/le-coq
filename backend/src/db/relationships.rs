@@ -22,7 +22,9 @@ impl RelationshipRow {
             from_entity: row.get("from_entity"),
             to_entity: row.get("to_entity"),
             relationship_type: row.get("relationship_type"),
-            properties: row.get("properties"),
+            properties: row
+                .get::<Option<Value>, _>("properties")
+                .unwrap_or_else(|| Value::Object(Default::default())),
             confidence: row.try_get("confidence").ok(),
             sources: row.try_get("sources").ok(),
         }

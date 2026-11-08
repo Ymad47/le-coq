@@ -100,11 +100,12 @@ Full list with comments: [`.env.example`](.env.example).
 | `BIND_ADDRESS` | `127.0.0.1:8000` | Backend listen address |
 | `DISABLE_AUTH` | unset | Dev only; refused unless `BIND_ADDRESS` is loopback |
 | `RUST_LOG` | `le_coq=info,tower_http=debug` | Log level |
-| `LE_COQ_ROOT` | repo path | Project root |
+| `LE_COQ_ROOT` | current directory | Project root (contains `plugins/`) |
 | `LE_COQ_PLUGINS_DIR` | `$LE_COQ_ROOT/plugins` | Plugin directory |
-| `LE_COQ_PLUGINS_VENV` | `$LE_COQ_PLUGINS_DIR/.venv/lib/python3.11/site-packages` | Plugin dependencies |
+| `LE_COQ_PLUGINS_VENV` | `$LE_COQ_PLUGINS_DIR/.venv/lib/python3.11/site-packages` | Plugin dependencies (used only if it exists; otherwise the interpreter's own site-packages) |
 | `POLL_INTERVAL_SECS` | `300` | Poller interval |
 | `ACLED_EMAIL`, `ACLED_PASSWORD` (or `ACLED_ACCESS_TOKEN` / `ACLED_REFRESH_TOKEN`) | — | ACLED plugin credentials |
+| `OPENCORPORATES_API_TOKEN` | — | OpenCorporates plugin token |
 
 Frontend dev server: `LE_COQ_BACKEND_URL` (default `http://127.0.0.1:8000`),
 `LE_COQ_UI_HOST` (default `127.0.0.1`).
@@ -129,7 +130,7 @@ All `/api/v1/*` routes require the `X-API-Key` header. `/health` is public.
 | GET | `/api/v1/timeline` | Articles ordered by publication date, optional date range |
 | POST | `/api/v1/ingest` | Run ingestion from a plugin |
 | GET | `/api/v1/sources` | List data sources |
-| GET | `/api/v1/plugins/health` | Plugin status |
+| GET | `/api/v1/plugins/health` | Plugin status (503 if the plugin package cannot load) |
 | POST | `/api/v1/plugins/reload` | Reload plugins |
 
 ```bash
@@ -182,7 +183,7 @@ le-coq/
 
 ## Development
 
-Same checks as CI:
+Same checks as CI (`make lint`, `make test`):
 
 ```bash
 # Rust
@@ -190,9 +191,10 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 
-# Python plugins
-pip install -r plugins/requirements-dev.txt
-PYTHONPATH=. pytest plugins/tests/
+# Python plugins (the backend also loads plugins/.venv when present)
+python3.11 -m venv plugins/.venv
+plugins/.venv/bin/pip install -r plugins/requirements-dev.txt
+scripts/test-plugins.sh
 
 # Frontend
 cd frontend

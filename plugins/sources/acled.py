@@ -9,7 +9,7 @@ import aiohttp
 import os
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
-from plugins import DataSourcePlugin, Entity, Event, register_plugin
+from plugins import DataSourcePlugin, Entity, Relationship, register_plugin
 
 
 class ACLEDPlugin(DataSourcePlugin):
@@ -53,8 +53,13 @@ class ACLEDPlugin(DataSourcePlugin):
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     self.TOKEN_URL,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    data=f"username={self.email}&password={self.password}&grant_type=password&client_id=acled&scope=authenticated",
+                    data={
+                        "username": self.email,
+                        "password": self.password,
+                        "grant_type": "password",
+                        "client_id": "acled",
+                        "scope": "authenticated",
+                    },
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as resp:
                     if resp.status == 200:
@@ -77,8 +82,11 @@ class ACLEDPlugin(DataSourcePlugin):
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     self.TOKEN_URL,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    data=f"refresh_token={self._refresh_token}&grant_type=refresh_token&client_id=acled",
+                    data={
+                        "refresh_token": self._refresh_token,
+                        "grant_type": "refresh_token",
+                        "client_id": "acled",
+                    },
                     timeout=aiohttp.ClientTimeout(total=10)
                 ) as resp:
                     if resp.status == 200:
@@ -116,26 +124,22 @@ class ACLEDPlugin(DataSourcePlugin):
     
     async def fetch(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Fetch conflict events with OAuth token"""
+        if not (self._access_token or self._refresh_token or (self.email and self.password)):
+            raise RuntimeError(
+                "ACLED: no credentials (set ACLED_EMAIL and ACLED_PASSWORD, "
+                "or ACLED_ACCESS_TOKEN)"
+            )
         token = await self._get_token()
         if not token:
-            print("ACLED: Failed to get token")
-            return []
-        
-        results = []
-        
+            raise RuntimeError("ACLED: authentication failed (check credentials)")
+
         params = {
             "limit": query.get("limit", 100),
         }
-        
-        if query.get("country"):
-            params["country"] = query["country"]
-        if query.get("event_type"):
-            params["event_type"] = query["event_type"]
-        if query.get("from_date"):
-            params["from_date"] = query["from_date"]
-        if query.get("to_date"):
-            params["to_date"] = query["to_date"]
-        
+        for key in ("country", "event_type", "from_date", "to_date"):
+            if query.get(key):
+                params[key] = query[key]
+
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{self.BASE_URL}/api/acled/read",
@@ -143,40 +147,70 @@ class ACLEDPlugin(DataSourcePlugin):
                 params=params,
                 timeout=aiohttp.ClientTimeout(total=60)
             ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    for event in data.get("data", []):
-                        # Create location entity
-                        location = Entity(
-                            id=f"acled_loc_{event['location']}",
-                            name=event["location"],
-                            entity_type="Location",
-                            properties={
-                                "latitude": event.get("latitude"),
-                                "longitude": event.get("longitude"),
-                                "country": event.get("country"),
-                                "region": event.get("region"),
-                            },
-                            sources=[event.get("source")]
-                        )
-                        results.append(location.model_dump())
-                        
-                        # Create event
-                        acled_event = Event(
-                            id=f"acled_{event['event_id_cnty']}",
-                            title=f"{event['sub_event_type']} in {event['location']}",
-                            date=datetime.strptime(event["event_date"], "%Y-%m-%d"),
-                            location=location.id,
-                            participants=[],
-                            event_type=self._map_event_type(event["event_type"]),
-                            description=event.get("notes", ""),
-                            sources=[event.get("source")] if event.get("source") else [],
-                            severity=self._map_severity(event.get("fatalities", 0))
-                        )
-                        results.append(acled_event.model_dump())
-        
+                if resp.status != 200:
+                    raise RuntimeError(f"ACLED: API returned HTTP {resp.status}")
+                data = await resp.json()
+
+        results: List[Dict[str, Any]] = []
+        for event in data.get("data", []):
+            results.extend(self._event_to_items(event))
         return results
-    
+
+    def _event_to_items(self, event: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """One ACLED event -> [location entity, event entity, occurred_in relation].
+
+        The backend stores entities and relationships only, so the event is an
+        entity of type "Event" whose published_at (event date) feeds the timeline.
+        """
+        source = event.get("source")
+        sources = [source] if source else []
+
+        location = Entity(
+            id=f"acled_loc_{event['location']}",
+            name=event["location"],
+            entity_type="Location",
+            properties={
+                "latitude": event.get("latitude"),
+                "longitude": event.get("longitude"),
+                "country": event.get("country"),
+                "region": event.get("region"),
+                "source": "ACLED",
+            },
+            sources=sources,
+        )
+
+        fatalities = int(event.get("fatalities") or 0)
+        event_entity = Entity(
+            id=f"acled_{event['event_id_cnty']}",
+            name=f"{event['sub_event_type']} in {event['location']}",
+            entity_type="Event",
+            properties={
+                "event_type": self._map_event_type(event["event_type"]),
+                "acled_event_type": event["event_type"],
+                "sub_event_type": event["sub_event_type"],
+                "severity": self._map_severity(fatalities),
+                "fatalities": fatalities,
+                "actor1": event.get("actor1"),
+                "actor2": event.get("actor2"),
+                "description": event.get("notes", ""),
+                "country": event.get("country"),
+                "source": "ACLED",
+            },
+            sources=sources,
+            # ACLED dates are days; midnight UTC keeps them on the right day.
+            published_at=f"{event['event_date']}T00:00:00Z",
+        )
+
+        occurred_in = Relationship(
+            id=f"acled_rel_{event['event_id_cnty']}",
+            from_entity=event_entity.id,
+            to_entity=location.id,
+            relationship_type="occurred_in",
+            sources=sources,
+        )
+
+        return [location.model_dump(), event_entity.model_dump(), occurred_in.model_dump()]
+
     def _map_event_type(self, acled_type: str) -> str:
         """Map ACLED event types to Le Coq event types"""
         mapping = {

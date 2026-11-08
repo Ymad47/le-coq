@@ -3,11 +3,13 @@
 
 use std::path::PathBuf;
 
-/// Project root — overridable via LE_COQ_ROOT env var
+/// Project root (the directory that contains `plugins/`).
+/// Set LE_COQ_ROOT to override; defaults to the current working directory.
 pub fn le_coq_root() -> PathBuf {
     std::env::var("LE_COQ_ROOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/home/yaya/le-coq"))
+        .or_else(|_| std::env::current_dir())
+        .unwrap_or_else(|_| PathBuf::from("."))
 }
 
 /// Le Chasseur output directory

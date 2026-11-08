@@ -1,16 +1,19 @@
 #!/bin/bash
 # Le Coq - Daily Backup Script
-# Runs via cron: 0 2 * * * /home/yaya/le-coq/scripts/backup.sh
+# Cron example: 0 2 * * * /path/to/le-coq/scripts/backup.sh
+# Defaults match docker/docker-compose.yml; override with env vars.
+# Password: use ~/.pgpass or PGPASSWORD.
 
-set -e
+set -euo pipefail
 
 # Configuration
-BACKUP_DIR="/home/yaya/le-coq/backups"
-PG_USER="lecoq"
-PG_DB="lecoq"
-PG_HOST="localhost"
-PG_PORT="5432"
-RETENTION_DAYS=7
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BACKUP_DIR="${BACKUP_DIR:-$ROOT/backups}"
+PG_USER="${PG_USER:-postgres}"
+PG_DB="${PG_DB:-le_coq}"
+PG_HOST="${PG_HOST:-127.0.0.1}"
+PG_PORT="${PG_PORT:-5432}"
+RETENTION_DAYS="${RETENTION_DAYS:-7}"
 
 # Create backup directory
 mkdir -p "$BACKUP_DIR"

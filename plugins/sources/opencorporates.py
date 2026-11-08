@@ -4,6 +4,8 @@ OpenCorporates Plugin - Company registry data
 API: https://api.opencorporates.com/documentation/API-Reference
 """
 
+import os
+
 import aiohttp
 from typing import Dict, List, Any
 from plugins import DataSourcePlugin, Entity, register_plugin
@@ -33,9 +35,13 @@ class OpenCorporatesPlugin(DataSourcePlugin):
     
     async def fetch(self, query: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Search for companies"""
+        if not self.api_key:
+            raise RuntimeError(
+                "OpenCorporates: no API token (set OPENCORPORATES_API_TOKEN)"
+            )
         results = []
-        
-        search_query = query.get("q", "")
+
+        search_query = query.get("q") or query.get("query") or ""
         jurisdiction = query.get("jurisdiction", "")
         
         async with aiohttp.ClientSession() as session:
@@ -53,27 +59,30 @@ class OpenCorporatesPlugin(DataSourcePlugin):
                 params=params,
                 timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    for company in data.get("results", {}).get("companies", []):
-                        entity = Entity(
-                            id=f"oc_{company['company']['opencorporates_url']}",
-                            name=company["company"]["name"],
-                            entity_type="Organization",
-                            aliases=company["company"].get("previous_names", []),
-                            properties={
-                                "jurisdiction": company["company"].get("jurisdiction_code"),
-                                "company_number": company["company"].get("company_number"),
-                                "incorporation_date": company["company"].get("incorporation_date"),
-                                "company_type": company["company"].get("company_type"),
-                                "status": company["company"].get("current_status"),
-                                "address": company["company"].get("registered_address_in_full"),
-                                "source_url": company["company"]["opencorporates_url"],
-                            },
-                            sources=[company["company"]["opencorporates_url"]]
-                        )
-                        results.append(entity.model_dump())
-        
+                if resp.status != 200:
+                    raise RuntimeError(f"OpenCorporates: API returned HTTP {resp.status}")
+                data = await resp.json()
+
+        for item in data.get("results", {}).get("companies", []):
+            company = item["company"]
+            entity = Entity(
+                id=f"oc_{company['opencorporates_url']}",
+                name=company["name"],
+                entity_type="Organization",
+                aliases=_previous_names(company),
+                properties={
+                    "jurisdiction": company.get("jurisdiction_code"),
+                    "company_number": company.get("company_number"),
+                    "incorporation_date": company.get("incorporation_date"),
+                    "company_type": company.get("company_type"),
+                    "status": company.get("current_status"),
+                    "address": company.get("registered_address_in_full"),
+                    "source_url": company["opencorporates_url"],
+                },
+                sources=[company["opencorporates_url"]]
+            )
+            results.append(entity.model_dump())
+
         return results
     
     def get_schema(self) -> Dict[str, Any]:
@@ -85,5 +94,15 @@ class OpenCorporatesPlugin(DataSourcePlugin):
         }
 
 
+def _previous_names(company: Dict[str, Any]) -> List[str]:
+    """previous_names is a list of {"company_name": ...} objects, not strings."""
+    names = []
+    for prev in company.get("previous_names") or []:
+        name = prev.get("company_name") if isinstance(prev, dict) else prev
+        if isinstance(name, str) and name:
+            names.append(name)
+    return names
+
+
 # Auto-register
-register_plugin(OpenCorporatesPlugin({"api_key": ""}))
+register_plugin(OpenCorporatesPlugin({"api_key": os.getenv("OPENCORPORATES_API_TOKEN", "")}))

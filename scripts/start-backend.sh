@@ -1,11 +1,14 @@
-#!/bin/bash
-# Start Le Coq backend
+#!/usr/bin/env bash
+# Start the Le Coq backend (release build) from the repository root.
+# Required: DATABASE_URL and LE_COQ_API_KEY, from the environment or .env.backend.
+# If libpython3.11 is not on the default library path, set LD_LIBRARY_PATH.
+set -euo pipefail
 
-export LD_LIBRARY_PATH="/home/yaya/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib:$LD_LIBRARY_PATH"
-export DATABASE_URL="postgresql://postgres:postgres@localhost:5432/le_coq"
-export BIND_ADDRESS="127.0.0.1:8000"
-export RUST_LOG="info"
-# LE_COQ_API_KEY must be set in the environment or in .env.backend
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
 
-cd /home/yaya/le-coq
+export BIND_ADDRESS="${BIND_ADDRESS:-127.0.0.1:8000}"
+export RUST_LOG="${RUST_LOG:-info}"
+export LE_COQ_ROOT="$ROOT"
+
 exec ./target/release/le-coq-backend

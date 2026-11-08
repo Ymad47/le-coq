@@ -20,7 +20,7 @@
 - [x] Run `cargo build` in backend directory
 - [x] Fix any compilation errors (chrono Datelike import dans poller.rs tests)
 - [x] Run `cargo test` — 33/33 passent (PYO3_PYTHON=python3.11 requis, fixé dans .cargo/config.toml)
-- [ ] Verify docker-compose builds successfully
+- [x] Verify backend image builds and runs (plugins load, non-root user) — 2026-11-08
 
 ### 2. Database Setup
 - [x] PostgreSQL + pgvector running (docker-postgres-1, healthy)
