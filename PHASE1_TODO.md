@@ -82,12 +82,6 @@
 - [ ] Add search with filters
 - [ ] Add graph visualization (D3.js or similar)
 
-### 10. CLI Zig
-- [ ] Implement HTTP client in Zig
-- [ ] Add commands: `list`, `search`, `ingest`
-- [ ] Add authentication (API key in config)
-- [ ] Test against backend
-
 ### 11. Documentation
 - [ ] Write API documentation (OpenAPI/Swagger)
 - [ ] Add plugin development guide

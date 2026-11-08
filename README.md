@@ -23,7 +23,6 @@ for public exposure — see [Security](#security).
 | **Plugins** | Python 3.11, embedded via PyO3 | OSINT data sources |
 | **Database** | PostgreSQL 16 (pgvector image) | Entities, relationships, full-text search |
 | **Frontend** | Svelte 4, Vite 5, TypeScript | List, graph (Cytoscape), map (jsvectormap), timeline |
-| **CLI** | Zig | Experimental |
 
 Not implemented yet (planned): Neo4j, Meilisearch, RAG / vector search, graph
 analytics (`backend/src/graph.rs` is a stub).
@@ -38,7 +37,6 @@ analytics (`backend/src/graph.rs` is a stub).
 - Python **3.11** — required: PyO3 is built against `abi3-py311`
 - Node.js 18+
 - Docker + Docker Compose
-- Zig (CLI only)
 
 ### 1. Configure secrets
 
@@ -174,7 +172,6 @@ le-coq/
 │       └── graph.rs        # Graph algorithms (stub)
 ├── plugins/            # Python plugins + tests
 ├── frontend/           # Svelte UI (+ nginx Dockerfile)
-├── cli/                # Zig CLI
 ├── docker/             # docker-compose.yml
 ├── docs/               # Architecture, security, deployment, ethics
 ├── scripts/            # start-backend.sh, systemd unit, backup.sh
