@@ -45,6 +45,12 @@ async fn main() -> Result<()> {
         }
     });
     tracing::info!("🐍 Python interpreter initialized");
+    // Surface a broken plugin setup at startup instead of at the first request.
+    match plugin_bridge::list_plugins() {
+        Ok(p) if p.is_empty() => tracing::warn!("no plugins loaded"),
+        Ok(p) => tracing::info!("🔌 {} plugins loaded: {}", p.len(), p.join(", ")),
+        Err(e) => tracing::error!("plugin system unavailable: {}", e),
+    }
 
     let postgres_pool = db::postgres::create_pool(&config.database_url).await?;
 
@@ -94,23 +100,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Cherche python3.11 dans le PATH (binaire ou shim)
+/// Finds python3.11 in PATH.
 fn which_python311() -> Result<std::path::PathBuf> {
-    for candidate in ["/home/yaya/.local/bin/python3.11", "python3.11"] {
-        let out = std::process::Command::new(candidate)
-            .arg("--version")
-            .output();
-        if let Ok(o) = out {
-            if o.status.success() {
-                // résultat absolu si commande trouvée via PATH
-                if candidate.contains('/') {
-                    return Ok(candidate.into());
-                }
-                if let Ok(p) = which::which(candidate) {
-                    return Ok(p);
-                }
-            }
-        }
-    }
-    Err(anyhow::anyhow!("python3.11 introuvable"))
+    which::which("python3.11").map_err(|_| anyhow::anyhow!("python3.11 not found in PATH"))
 }

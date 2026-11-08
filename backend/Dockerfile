@@ -43,8 +43,19 @@ COPY --from=builder /app/target/release/le-coq-backend ./
 
 # Python 3.11 runtime (includes libpython3.11 under /usr/local/lib)
 
+# Plugin dependencies, installed into the interpreter the backend embeds
+COPY plugins/requirements.txt ./plugins/requirements.txt
+RUN pip install --no-cache-dir -r plugins/requirements.txt
+
 # Copy Python plugins
 COPY plugins ./plugins
-COPY Cargo.toml ./
+
+# Run as an unprivileged user
+RUN useradd --system --uid 10001 --no-create-home lecoq
+USER lecoq
+
+ENV LE_COQ_ROOT=/app \
+    PYTHONDONTWRITEBYTECODE=1
+EXPOSE 8000
 
 CMD ["./le-coq-backend"]

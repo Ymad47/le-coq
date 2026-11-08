@@ -22,7 +22,9 @@ impl RelationshipRow {
             from_entity: row.get("from_entity"),
             to_entity: row.get("to_entity"),
             relationship_type: row.get("relationship_type"),
-            properties: row.get("properties"),
+            properties: row
+                .get::<Option<Value>, _>("properties")
+                .unwrap_or_else(|| Value::Object(Default::default())),
             confidence: row.try_get("confidence").ok(),
             sources: row.try_get("sources").ok(),
         }
@@ -130,4 +132,35 @@ pub async fn between_entities(
     .await?;
 
     Ok(rows.iter().map(RelationshipRow::from_row).collect())
+}
+
+/// Edges for graph analytics: (from, to, type), optionally without the given
+/// generic types. Capped at `limit` rows; deterministic order so a truncated
+/// graph is stable between calls.
+pub async fn edges(
+    pool: &PgPool,
+    exclude_types: &[String],
+    limit: i64,
+) -> Result<Vec<(String, String, String)>, sqlx::Error> {
+    let rows = sqlx::query(
+        r#"SELECT from_entity, to_entity, relationship_type
+           FROM relationships
+           WHERE NOT (relationship_type = ANY($1))
+           ORDER BY id
+           LIMIT $2"#,
+    )
+    .bind(exclude_types)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    rows.iter()
+        .map(|r| {
+            Ok((
+                r.try_get("from_entity")?,
+                r.try_get("to_entity")?,
+                r.try_get("relationship_type")?,
+            ))
+        })
+        .collect()
 }

@@ -161,6 +161,8 @@ fn entity_from_row(row: &sqlx::postgres::PgRow) -> EntityRow {
         id: row.get::<String, _>("id"),
         name: row.get("name"),
         entity_type: row.get("entity_type"),
-        properties: row.get::<Value, _>("properties"),
+        properties: row
+            .get::<Option<Value>, _>("properties")
+            .unwrap_or_else(|| Value::Object(Default::default())),
     }
 }

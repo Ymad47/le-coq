@@ -100,3 +100,69 @@ class TestCallPluginMethodSync:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestCredentialedSources:
+    """Sources that need credentials must fail loudly, not return []."""
+
+    async def test_acled_without_credentials_raises(self):
+        from plugins.sources.acled import ACLEDPlugin
+
+        plugin = ACLEDPlugin({})
+        plugin.email = plugin.password = ""
+        plugin._access_token = plugin._refresh_token = None
+        with pytest.raises(RuntimeError, match="no credentials"):
+            await plugin.fetch({"country": "Niger"})
+
+    async def test_opencorporates_without_token_raises(self):
+        from plugins.sources.opencorporates import OpenCorporatesPlugin
+
+        plugin = OpenCorporatesPlugin({"api_key": ""})
+        with pytest.raises(RuntimeError, match="no API token"):
+            await plugin.fetch({"q": "TotalEnergies"})
+
+    def test_opencorporates_previous_names_are_strings(self):
+        from plugins.sources.opencorporates import _previous_names
+
+        company = {"previous_names": [{"company_name": "TOTAL SA"}, {"company_name": None}, "ELF"]}
+        assert _previous_names(company) == ["TOTAL SA", "ELF"]
+
+
+class TestAcledMapping:
+    """ACLED events must become items the backend can store."""
+
+    EVENT = {
+        "event_id_cnty": "NIG1234",
+        "event_date": "2026-09-05",
+        "event_type": "Battles",
+        "sub_event_type": "Armed clash",
+        "location": "Niamey",
+        "country": "Niger",
+        "latitude": "13.51",
+        "longitude": "2.11",
+        "fatalities": "12",
+        "source": "Le Sahel",
+        "notes": "Clash reported.",
+    }
+
+    def test_event_becomes_location_event_and_relation(self):
+        from plugins.sources.acled import ACLEDPlugin
+
+        loc, ev, rel = ACLEDPlugin({})._event_to_items(self.EVENT)
+
+        for entity in (loc, ev):
+            assert {"id", "name", "entity_type", "aliases", "properties", "sources"} <= entity.keys()
+        assert loc["entity_type"] == "Location"
+        assert ev["entity_type"] == "Event"
+        assert ev["published_at"] == "2026-09-05T00:00:00Z"
+        assert ev["properties"]["severity"] == "high"
+        assert rel["from_entity"] == ev["id"]
+        assert rel["to_entity"] == loc["id"]
+        assert rel["relationship_type"] == "occurred_in"
+
+    def test_missing_source_gives_empty_sources(self):
+        from plugins.sources.acled import ACLEDPlugin
+
+        event = dict(self.EVENT, source=None)
+        loc, ev, rel = ACLEDPlugin({})._event_to_items(event)
+        assert loc["sources"] == ev["sources"] == rel["sources"] == []

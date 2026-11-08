@@ -3,21 +3,22 @@
 # Prevents false positives from testing against a system python with different deps.
 set -euo pipefail
 
-VENV_PYTHON="/home/yaya/le-coq/plugins/.venv/bin/python"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VENV_PYTHON="${LE_COQ_PLUGINS_PYTHON:-$ROOT/plugins/.venv/bin/python}"
 
 if [[ ! -x "$VENV_PYTHON" ]]; then
     echo "ERR: backend venv not found at $VENV_PYTHON" >&2
-    echo "Create it: uv venv /home/yaya/le-coq/plugins/.venv --python 3.11 && uv pip install --python $VENV_PYTHON -e /home/yaya/le-coq" >&2
+    echo "Create it: python3.11 -m venv $ROOT/plugins/.venv && $VENV_PYTHON -m pip install -r $ROOT/plugins/requirements-dev.txt" >&2
     exit 1
 fi
 
 echo "Using: $VENV_PYTHON"
-cd "$(dirname "$0")/.."
+cd "$ROOT"
 
 # Quick sanity: all plugins importable
-"$VENV_PYTHON" - <<'PY'
+"$VENV_PYTHON" - "$ROOT" <<'PY'
 import sys
-sys.path.insert(0, "/home/yaya/le-coq")
+sys.path.insert(0, sys.argv[1])
 from plugins import list_plugins, plugin_failures
 loaded = list_plugins()
 failed = plugin_failures()

@@ -12,8 +12,8 @@ use subtle::ConstantTimeEq;
 /// Minimum accepted key length. Generate one with `openssl rand -hex 32`.
 pub const MIN_API_KEY_LEN: usize = 32;
 
-/// Header carrying the key. Fixed on purpose: the Vite proxy, the nginx
-/// template and the Zig CLI all send this exact name.
+/// Header carrying the key. Fixed on purpose: the Vite proxy and the nginx
+/// template all send this exact name.
 pub const API_KEY_HEADER: &str = "X-API-Key";
 
 /// Secret API key. `Debug` is redacted so the key never ends up in logs.

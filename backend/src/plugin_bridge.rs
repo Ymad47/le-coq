@@ -33,9 +33,18 @@ pub fn init_python() -> Result<(), String> {
         let plugins_dir = crate::config::plugins_dir();
         let le_coq_root = crate::config::le_coq_root();
 
-        path_list
-            .insert(0, site_packages.to_string_lossy().as_ref())
-            .map_err(|e| format!("Failed to insert site-packages: {}", e))?;
+        // Optional: a dedicated plugins venv. Without it the interpreter's own
+        // site-packages are used (e.g. the Docker image installs deps globally).
+        if site_packages.is_dir() {
+            path_list
+                .insert(0, site_packages.to_string_lossy().as_ref())
+                .map_err(|e| format!("Failed to insert site-packages: {}", e))?;
+        } else {
+            tracing::info!(
+                "plugins venv not found at {}, using the interpreter's site-packages",
+                site_packages.display()
+            );
+        }
         path_list
             .append(plugins_dir.to_string_lossy().as_ref())
             .map_err(|e| format!("Failed to append plugins: {}", e))?;

@@ -20,7 +20,7 @@
 - [x] Run `cargo build` in backend directory
 - [x] Fix any compilation errors (chrono Datelike import dans poller.rs tests)
 - [x] Run `cargo test` — 33/33 passent (PYO3_PYTHON=python3.11 requis, fixé dans .cargo/config.toml)
-- [ ] Verify docker-compose builds successfully
+- [x] Verify backend image builds and runs (plugins load, non-root user) — 2026-11-08
 
 ### 2. Database Setup
 - [x] PostgreSQL + pgvector running (docker-postgres-1, healthy)
@@ -81,12 +81,6 @@
 - [ ] Add entity detail view
 - [ ] Add search with filters
 - [ ] Add graph visualization (D3.js or similar)
-
-### 10. CLI Zig
-- [ ] Implement HTTP client in Zig
-- [ ] Add commands: `list`, `search`, `ingest`
-- [ ] Add authentication (API key in config)
-- [ ] Test against backend
 
 ### 11. Documentation
 - [ ] Write API documentation (OpenAPI/Swagger)

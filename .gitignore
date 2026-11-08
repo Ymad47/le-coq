@@ -1,6 +1,5 @@
 # Build artifacts
 target/
-zig-out/
 *.o
 *.so
 *.a
@@ -37,12 +36,11 @@ audits/
 *.sqlite
 
 # Caches (dev artifacts — doit pas être commités)
-zig-cache/
-.zig-cache/
-__pycache__/
+.__pycache__/
 *.pyc
 graphify-out/
 venv/
+.venv/
 node_modules/
 dist/.lecoq-state/
 frontend/dist/

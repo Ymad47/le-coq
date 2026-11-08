@@ -44,13 +44,14 @@ pub async fn type_breakdown(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
-        .iter()
-        .map(|r| TypeBreakdown {
-            entity_type: r.get("entity_type"),
-            count: r.get("n"),
+    rows.iter()
+        .map(|r| {
+            Ok(TypeBreakdown {
+                entity_type: r.try_get("entity_type")?,
+                count: r.try_get("n")?,
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// Top 3 typed relation kinds (excludes generic types like "related"/"mentions").
@@ -71,13 +72,14 @@ pub async fn top_rel_types(
     .fetch_all(pool)
     .await?;
 
-    Ok(rows
-        .iter()
-        .map(|r| RelTypeCount {
-            relationship_type: r.get("relationship_type"),
-            count: r.get("n"),
+    rows.iter()
+        .map(|r| {
+            Ok(RelTypeCount {
+                relationship_type: r.try_get("relationship_type")?,
+                count: r.try_get("n")?,
+            })
         })
-        .collect())
+        .collect()
 }
 
 /// Strongest neighbor by SUM(confidence) across shared typed relations.
@@ -86,7 +88,7 @@ pub async fn top_neighbor(
     entity_id: &str,
 ) -> Result<Option<TopNeighbor>, sqlx::Error> {
     let row = sqlx::query(
-        r#"SELECT neighbor.id, neighbor.name, SUM(r.confidence) as weight, COUNT(*) as rels
+        r#"SELECT neighbor.id, neighbor.name, COALESCE(SUM(r.confidence), 0)::float8 as weight, COUNT(*) as rels
            FROM relationships r
            JOIN entities neighbor ON (
              neighbor.id = CASE WHEN r.from_entity = $1 THEN r.to_entity ELSE r.from_entity END
@@ -101,10 +103,13 @@ pub async fn top_neighbor(
     .fetch_optional(pool)
     .await?;
 
-    Ok(row.map(|r| TopNeighbor {
-        id: r.get("id"),
-        name: r.get("name"),
-        weight: r.get("weight"),
-        rels: r.get("rels"),
-    }))
+    row.map(|r| {
+        Ok(TopNeighbor {
+            id: r.try_get("id")?,
+            name: r.try_get("name")?,
+            weight: r.try_get("weight")?,
+            rels: r.try_get("rels")?,
+        })
+    })
+    .transpose()
 }

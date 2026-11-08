@@ -23,10 +23,10 @@ for public exposure — see [Security](#security).
 | **Plugins** | Python 3.11, embedded via PyO3 | OSINT data sources |
 | **Database** | PostgreSQL 16 (pgvector image) | Entities, relationships, full-text search |
 | **Frontend** | Svelte 4, Vite 5, TypeScript | List, graph (Cytoscape), map (jsvectormap), timeline |
-| **CLI** | Zig | Experimental |
 
-Not implemented yet (planned): Neo4j, Meilisearch, RAG / vector search, graph
-analytics (`backend/src/graph.rs` is a stub).
+Not implemented yet (planned): Neo4j, Meilisearch, RAG / vector search,
+cross-source entity resolution (the same person from Wikipedia and Wikidata is
+two entities today).
 
 ---
 
@@ -38,7 +38,6 @@ analytics (`backend/src/graph.rs` is a stub).
 - Python **3.11** — required: PyO3 is built against `abi3-py311`
 - Node.js 18+
 - Docker + Docker Compose
-- Zig (CLI only)
 
 ### 1. Configure secrets
 
@@ -102,11 +101,12 @@ Full list with comments: [`.env.example`](.env.example).
 | `BIND_ADDRESS` | `127.0.0.1:8000` | Backend listen address |
 | `DISABLE_AUTH` | unset | Dev only; refused unless `BIND_ADDRESS` is loopback |
 | `RUST_LOG` | `le_coq=info,tower_http=debug` | Log level |
-| `LE_COQ_ROOT` | repo path | Project root |
+| `LE_COQ_ROOT` | current directory | Project root (contains `plugins/`) |
 | `LE_COQ_PLUGINS_DIR` | `$LE_COQ_ROOT/plugins` | Plugin directory |
-| `LE_COQ_PLUGINS_VENV` | `$LE_COQ_PLUGINS_DIR/.venv/lib/python3.11/site-packages` | Plugin dependencies |
+| `LE_COQ_PLUGINS_VENV` | `$LE_COQ_PLUGINS_DIR/.venv/lib/python3.11/site-packages` | Plugin dependencies (used only if it exists; otherwise the interpreter's own site-packages) |
 | `POLL_INTERVAL_SECS` | `300` | Poller interval |
 | `ACLED_EMAIL`, `ACLED_PASSWORD` (or `ACLED_ACCESS_TOKEN` / `ACLED_REFRESH_TOKEN`) | — | ACLED plugin credentials |
+| `OPENCORPORATES_API_TOKEN` | — | OpenCorporates plugin token |
 
 Frontend dev server: `LE_COQ_BACKEND_URL` (default `http://127.0.0.1:8000`),
 `LE_COQ_UI_HOST` (default `127.0.0.1`).
@@ -128,15 +128,23 @@ All `/api/v1/*` routes require the `X-API-Key` header. `/health` is public.
 | POST | `/api/v1/search` | Full-text search |
 | GET | `/api/v1/topic` | Topic search |
 | POST | `/api/v1/graph/neighborhood` | Graph neighborhood of an entity |
+| GET | `/api/v1/graph/centrality` | Most central entities (PageRank); `limit`, `entity_type`, `typed_only` |
+| GET | `/api/v1/graph/path` | Shortest relationship chain; `from`, `to`, `max_depth` (≤ 12), `typed_only` |
+| GET | `/api/v1/graph/communities` | Clusters (Louvain), largest first; `limit`, `min_size`, `members`, `typed_only` |
 | GET | `/api/v1/timeline` | Articles ordered by publication date, optional date range |
 | POST | `/api/v1/ingest` | Run ingestion from a plugin |
 | GET | `/api/v1/sources` | List data sources |
-| GET | `/api/v1/plugins/health` | Plugin status |
+| GET | `/api/v1/plugins/health` | Plugin status (503 if the plugin package cannot load) |
 | POST | `/api/v1/plugins/reload` | Reload plugins |
 
 ```bash
 curl -H "X-API-Key: $LE_COQ_API_KEY" http://127.0.0.1:8000/api/v1/entities
 ```
+
+Graph analytics run in memory over the whole relationship table (capped at
+200k edges; responses then carry `truncated: true`). `typed_only=true` drops
+generic links (`related_to`, `mentions`…) that otherwise dominate Wikipedia
+data. Paths ignore edge direction.
 
 ---
 
@@ -171,10 +179,9 @@ le-coq/
 │       ├── ingestion.rs, dedup.rs
 │       ├── plugin_bridge.rs # PyO3 bridge to Python plugins
 │       ├── poller.rs       # Background poller (not started yet)
-│       └── graph.rs        # Graph algorithms (stub)
+│       └── graph.rs        # PageRank, shortest path, Louvain communities
 ├── plugins/            # Python plugins + tests
 ├── frontend/           # Svelte UI (+ nginx Dockerfile)
-├── cli/                # Zig CLI
 ├── docker/             # docker-compose.yml
 ├── docs/               # Architecture, security, deployment, ethics
 ├── scripts/            # start-backend.sh, systemd unit, backup.sh
@@ -185,7 +192,7 @@ le-coq/
 
 ## Development
 
-Same checks as CI:
+Same checks as CI (`make lint`, `make test`):
 
 ```bash
 # Rust
@@ -193,9 +200,10 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 
-# Python plugins
-pip install -r plugins/requirements-dev.txt
-PYTHONPATH=. pytest plugins/tests/
+# Python plugins (the backend also loads plugins/.venv when present)
+python3.11 -m venv plugins/.venv
+plugins/.venv/bin/pip install -r plugins/requirements-dev.txt
+scripts/test-plugins.sh
 
 # Frontend
 cd frontend

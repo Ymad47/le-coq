@@ -163,7 +163,7 @@ class WikidataPlugin(DataSourcePlugin):
           limit: max results (default 5)
         """
         results: List[Dict[str, Any]] = []
-        search_q = query.get("q", "")
+        search_q = query.get("q") or query.get("query") or ""
         qid_direct = query.get("qid")
         limit = int(query.get("limit", 5))
 

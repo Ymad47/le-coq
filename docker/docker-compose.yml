@@ -8,8 +8,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: le_coq
     volumes:
+      # Schema is created by the backend (embedded sqlx migrations).
       - postgres_data:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
