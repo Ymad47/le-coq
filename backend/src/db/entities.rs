@@ -189,3 +189,11 @@ pub async fn insert_stub(
     .await?;
     Ok(())
 }
+
+/// Ids of all entities of one type (for filtering graph results).
+pub async fn ids_of_type(pool: &PgPool, entity_type: &str) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar("SELECT id FROM entities WHERE entity_type = $1")
+        .bind(entity_type)
+        .fetch_all(pool)
+        .await
+}

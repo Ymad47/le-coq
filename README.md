@@ -24,8 +24,9 @@ for public exposure — see [Security](#security).
 | **Database** | PostgreSQL 16 (pgvector image) | Entities, relationships, full-text search |
 | **Frontend** | Svelte 4, Vite 5, TypeScript | List, graph (Cytoscape), map (jsvectormap), timeline |
 
-Not implemented yet (planned): Neo4j, Meilisearch, RAG / vector search, graph
-analytics (`backend/src/graph.rs` is a stub).
+Not implemented yet (planned): Neo4j, Meilisearch, RAG / vector search,
+cross-source entity resolution (the same person from Wikipedia and Wikidata is
+two entities today).
 
 ---
 
@@ -127,6 +128,9 @@ All `/api/v1/*` routes require the `X-API-Key` header. `/health` is public.
 | POST | `/api/v1/search` | Full-text search |
 | GET | `/api/v1/topic` | Topic search |
 | POST | `/api/v1/graph/neighborhood` | Graph neighborhood of an entity |
+| GET | `/api/v1/graph/centrality` | Most central entities (PageRank); `limit`, `entity_type`, `typed_only` |
+| GET | `/api/v1/graph/path` | Shortest relationship chain; `from`, `to`, `max_depth` (≤ 12), `typed_only` |
+| GET | `/api/v1/graph/communities` | Clusters (Louvain), largest first; `limit`, `min_size`, `members`, `typed_only` |
 | GET | `/api/v1/timeline` | Articles ordered by publication date, optional date range |
 | POST | `/api/v1/ingest` | Run ingestion from a plugin |
 | GET | `/api/v1/sources` | List data sources |
@@ -136,6 +140,11 @@ All `/api/v1/*` routes require the `X-API-Key` header. `/health` is public.
 ```bash
 curl -H "X-API-Key: $LE_COQ_API_KEY" http://127.0.0.1:8000/api/v1/entities
 ```
+
+Graph analytics run in memory over the whole relationship table (capped at
+200k edges; responses then carry `truncated: true`). `typed_only=true` drops
+generic links (`related_to`, `mentions`…) that otherwise dominate Wikipedia
+data. Paths ignore edge direction.
 
 ---
 
@@ -170,7 +179,7 @@ le-coq/
 │       ├── ingestion.rs, dedup.rs
 │       ├── plugin_bridge.rs # PyO3 bridge to Python plugins
 │       ├── poller.rs       # Background poller (not started yet)
-│       └── graph.rs        # Graph algorithms (stub)
+│       └── graph.rs        # PageRank, shortest path, Louvain communities
 ├── plugins/            # Python plugins + tests
 ├── frontend/           # Svelte UI (+ nginx Dockerfile)
 ├── docker/             # docker-compose.yml

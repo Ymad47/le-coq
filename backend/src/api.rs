@@ -29,6 +29,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/api/v1/search", get(smart_search).post(search))
         .route("/api/v1/topic", get(topic_search))
         .route("/api/v1/graph/neighborhood", post(graph_neighborhood))
+        .route("/api/v1/graph/centrality", get(graph_centrality))
+        .route("/api/v1/graph/path", get(graph_path))
+        .route("/api/v1/graph/communities", get(graph_communities))
         .route("/api/v1/timeline", get(timeline))
         .route("/api/v1/ingest", post(ingest_data))
         .route("/api/v1/sources", get(list_sources))
@@ -956,6 +959,438 @@ mod neighborhood_tests {
             validate_neighborhood(req(&["a"], Some(99_999))).unwrap().1,
             5000
         );
+    }
+}
+
+// ============================================================
+// Graph analytics — GET /api/v1/graph/{centrality,path,communities}
+// Whole-graph algorithms (see graph.rs), computed per request in memory.
+// ============================================================
+
+/// Edges loaded per request: bounds memory and CPU on small hosts. Beyond
+/// this the response says `truncated: true` and results are approximate.
+const GRAPH_MAX_EDGES: usize = 200_000;
+const GRAPH_DEFAULT_RESULTS: u32 = 20;
+const GRAPH_MAX_RESULTS: u32 = 200;
+const GRAPH_DEFAULT_PATH_DEPTH: u32 = 6;
+const GRAPH_MAX_PATH_DEPTH: u32 = 12;
+const GRAPH_DEFAULT_MIN_SIZE: u32 = 3;
+const GRAPH_DEFAULT_MEMBERS: u32 = 10;
+const GRAPH_MAX_MEMBERS: u32 = 100;
+const GRAPH_MAX_PARAM_LEN: usize = 512;
+
+fn graph_db_error(what: &'static str) -> impl Fn(sqlx::Error) -> (StatusCode, String) {
+    move |e| {
+        tracing::error!("{} DB error: {}", what, e);
+        (StatusCode::INTERNAL_SERVER_ERROR, "DB error".to_string())
+    }
+}
+
+/// Loads the edge list; `truncated` is exact (one extra row is fetched).
+async fn load_graph_edges(
+    state: &AppState,
+    typed_only: bool,
+) -> Result<(Vec<crate::graph::Edge>, bool), (StatusCode, String)> {
+    let exclude: Vec<String> = if typed_only {
+        crate::graph::GENERIC_REL_TYPES
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let mut rows = db::relationships::edges(&state.postgres, &exclude, GRAPH_MAX_EDGES as i64 + 1)
+        .await
+        .map_err(graph_db_error("graph edges"))?;
+    let truncated = rows.len() > GRAPH_MAX_EDGES;
+    rows.truncate(GRAPH_MAX_EDGES);
+    let edges = rows
+        .into_iter()
+        .map(|(from, to, relationship_type)| crate::graph::Edge {
+            from,
+            to,
+            relationship_type,
+        })
+        .collect();
+    Ok((edges, truncated))
+}
+
+/// Runs a CPU-bound graph computation off the async workers.
+async fn graph_compute<T, F>(f: F) -> Result<T, (StatusCode, String)>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f).await.map_err(|e| {
+        tracing::error!("graph computation failed: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "graph computation failed".to_string(),
+        )
+    })
+}
+
+/// id -> entity row, for decorating results with names and types.
+async fn entities_by_id(
+    state: &AppState,
+    ids: &[String],
+) -> Result<std::collections::HashMap<String, db::entities::EntityRow>, (StatusCode, String)> {
+    let rows = db::entities::get_many(&state.postgres, ids)
+        .await
+        .map_err(graph_db_error("graph entities"))?;
+    Ok(rows.into_iter().map(|r| (r.id.clone(), r)).collect())
+}
+
+fn entity_ref(
+    id: &str,
+    known: &std::collections::HashMap<String, db::entities::EntityRow>,
+) -> serde_json::Value {
+    let row = known.get(id);
+    serde_json::json!({
+        "id": id,
+        "name": row.map(|r| r.name.as_str()),
+        "entity_type": row.map(|r| r.entity_type.as_str()),
+    })
+}
+
+fn check_param(name: &str, value: &str) -> Result<String, String> {
+    let v = value.trim();
+    if v.is_empty() {
+        return Err(format!("{} must not be empty", name));
+    }
+    if v.len() > GRAPH_MAX_PARAM_LEN {
+        return Err(format!(
+            "{} longer than {} bytes",
+            name, GRAPH_MAX_PARAM_LEN
+        ));
+    }
+    Ok(v.to_string())
+}
+
+#[derive(Deserialize)]
+struct CentralityQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    entity_type: Option<String>,
+    #[serde(default)]
+    typed_only: bool,
+}
+
+struct CentralityParams {
+    limit: usize,
+    entity_type: Option<String>,
+    typed_only: bool,
+}
+
+fn validate_centrality(q: CentralityQuery) -> Result<CentralityParams, String> {
+    let entity_type = match q.entity_type.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(t) => Some(check_param("entity_type", t)?),
+    };
+    Ok(CentralityParams {
+        limit: q
+            .limit
+            .unwrap_or(GRAPH_DEFAULT_RESULTS)
+            .clamp(1, GRAPH_MAX_RESULTS) as usize,
+        entity_type,
+        typed_only: q.typed_only,
+    })
+}
+
+/// Most central entities by PageRank, optionally of one type.
+async fn graph_centrality(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<CentralityQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let p = validate_centrality(q).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let (edges, truncated) = load_graph_edges(&state, p.typed_only).await?;
+    let allowed: Option<std::collections::HashSet<String>> = match &p.entity_type {
+        Some(t) => Some(
+            db::entities::ids_of_type(&state.postgres, t)
+                .await
+                .map_err(graph_db_error("graph entity types"))?
+                .into_iter()
+                .collect(),
+        ),
+        None => None,
+    };
+
+    let limit = p.limit;
+    let (nodes, edge_count, top) = graph_compute(move || {
+        let g = crate::graph::Graph::new(edges);
+        let top: Vec<crate::graph::Centrality> = crate::graph::centrality(&g)
+            .into_iter()
+            .filter(|c| allowed.as_ref().is_none_or(|a| a.contains(&c.id)))
+            .take(limit)
+            .collect();
+        (g.node_count(), g.edge_count(), top)
+    })
+    .await?;
+
+    let ids: Vec<String> = top.iter().map(|c| c.id.clone()).collect();
+    let known = entities_by_id(&state, &ids).await?;
+    let results: Vec<serde_json::Value> = top
+        .iter()
+        .map(|c| {
+            let mut v = entity_ref(&c.id, &known);
+            v["pagerank"] = serde_json::json!(c.pagerank);
+            v["in_degree"] = serde_json::json!(c.in_degree);
+            v["out_degree"] = serde_json::json!(c.out_degree);
+            v
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "node_count": nodes,
+        "edge_count": edge_count,
+        "truncated": truncated,
+        "typed_only": p.typed_only,
+        "entity_type": p.entity_type,
+        "results": results,
+    })))
+}
+
+#[derive(Deserialize)]
+struct PathQuery {
+    from: String,
+    to: String,
+    #[serde(default)]
+    max_depth: Option<u32>,
+    #[serde(default)]
+    typed_only: bool,
+}
+
+struct PathParams {
+    from: String,
+    to: String,
+    max_depth: usize,
+    typed_only: bool,
+}
+
+fn validate_path(q: PathQuery) -> Result<PathParams, String> {
+    Ok(PathParams {
+        from: check_param("from", &q.from)?,
+        to: check_param("to", &q.to)?,
+        max_depth: q
+            .max_depth
+            .unwrap_or(GRAPH_DEFAULT_PATH_DEPTH)
+            .clamp(1, GRAPH_MAX_PATH_DEPTH) as usize,
+        typed_only: q.typed_only,
+    })
+}
+
+/// Shortest chain of relationships between two entities (direction ignored).
+async fn graph_path(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<PathQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let p = validate_path(q).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    let (edges, truncated) = load_graph_edges(&state, p.typed_only).await?;
+
+    let (from, to, depth) = (p.from.clone(), p.to.clone(), p.max_depth);
+    let (missing, path) = graph_compute(move || {
+        let g = crate::graph::Graph::new(edges);
+        let missing: Vec<String> = [&from, &to]
+            .into_iter()
+            .filter(|id| !g.contains(id))
+            .cloned()
+            .collect();
+        let path = crate::graph::shortest_path(&g, &from, &to, depth);
+        (missing, path)
+    })
+    .await?;
+
+    if !missing.is_empty() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("no relationships for: {}", missing.join(", ")),
+        ));
+    }
+
+    let (nodes, relationships) = match &path {
+        Some(path) => {
+            let known = entities_by_id(&state, &path.nodes).await?;
+            let nodes: Vec<serde_json::Value> =
+                path.nodes.iter().map(|id| entity_ref(id, &known)).collect();
+            let rels: Vec<serde_json::Value> = path
+                .edges
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "from_entity": e.from,
+                        "to_entity": e.to,
+                        "relationship_type": e.relationship_type,
+                    })
+                })
+                .collect();
+            (nodes, rels)
+        }
+        None => (Vec::new(), Vec::new()),
+    };
+
+    Ok(Json(serde_json::json!({
+        "from": p.from,
+        "to": p.to,
+        "found": path.is_some(),
+        "length": path.as_ref().map(|x| x.edges.len()),
+        "max_depth": p.max_depth,
+        "typed_only": p.typed_only,
+        "truncated": truncated,
+        "nodes": nodes,
+        "relationships": relationships,
+    })))
+}
+
+#[derive(Deserialize)]
+struct CommunitiesQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+    #[serde(default)]
+    min_size: Option<u32>,
+    #[serde(default)]
+    members: Option<u32>,
+    #[serde(default)]
+    typed_only: bool,
+}
+
+struct CommunitiesParams {
+    limit: usize,
+    min_size: usize,
+    members: usize,
+    typed_only: bool,
+}
+
+fn validate_communities(q: CommunitiesQuery) -> CommunitiesParams {
+    CommunitiesParams {
+        limit: q
+            .limit
+            .unwrap_or(GRAPH_DEFAULT_RESULTS)
+            .clamp(1, GRAPH_MAX_RESULTS) as usize,
+        min_size: q.min_size.unwrap_or(GRAPH_DEFAULT_MIN_SIZE).max(2) as usize,
+        members: q
+            .members
+            .unwrap_or(GRAPH_DEFAULT_MEMBERS)
+            .clamp(1, GRAPH_MAX_MEMBERS) as usize,
+        typed_only: q.typed_only,
+    }
+}
+
+/// Clusters of densely connected entities (Louvain), largest first.
+async fn graph_communities(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<CommunitiesQuery>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let p = validate_communities(q);
+    let (edges, truncated) = load_graph_edges(&state, p.typed_only).await?;
+
+    let (limit, min_size, max_members) = (p.limit, p.min_size, p.members);
+    let (nodes, edge_count, total, top) = graph_compute(move || {
+        let g = crate::graph::Graph::new(edges);
+        let all = crate::graph::communities(&g);
+        let total = all.len();
+        // (size, top members) — sorted by size already
+        let top: Vec<(usize, Vec<String>)> = all
+            .into_iter()
+            .filter(|c| c.members.len() >= min_size)
+            .take(limit)
+            .map(|mut c| {
+                let size = c.members.len();
+                c.members.truncate(max_members);
+                (size, c.members)
+            })
+            .collect();
+        (g.node_count(), g.edge_count(), total, top)
+    })
+    .await?;
+
+    let ids: Vec<String> = top.iter().flat_map(|(_, m)| m.iter().cloned()).collect();
+    let known = entities_by_id(&state, &ids).await?;
+    let communities: Vec<serde_json::Value> = top
+        .iter()
+        .enumerate()
+        .map(|(i, (size, members))| {
+            serde_json::json!({
+                "rank": i + 1,
+                "size": size,
+                "members": members.iter().map(|id| entity_ref(id, &known)).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+
+    Ok(Json(serde_json::json!({
+        "node_count": nodes,
+        "edge_count": edge_count,
+        "truncated": truncated,
+        "typed_only": p.typed_only,
+        "community_count": total,
+        "min_size": p.min_size,
+        "communities": communities,
+    })))
+}
+
+#[cfg(test)]
+mod graph_api_tests {
+    use super::*;
+
+    #[test]
+    fn centrality_defaults_and_clamps() {
+        let p = validate_centrality(CentralityQuery {
+            limit: None,
+            entity_type: None,
+            typed_only: false,
+        })
+        .unwrap();
+        assert_eq!(p.limit, 20);
+        assert!(p.entity_type.is_none());
+        let p = validate_centrality(CentralityQuery {
+            limit: Some(10_000),
+            entity_type: Some("  ".into()),
+            typed_only: true,
+        })
+        .unwrap();
+        assert_eq!(p.limit, 200);
+        assert!(p.entity_type.is_none());
+        assert!(validate_centrality(CentralityQuery {
+            limit: Some(0),
+            entity_type: Some("x".repeat(600)),
+            typed_only: false,
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn path_validation() {
+        let q = |from: &str, to: &str, d| PathQuery {
+            from: from.into(),
+            to: to.into(),
+            max_depth: d,
+            typed_only: false,
+        };
+        let p = validate_path(q(" a ", "b", None)).unwrap();
+        assert_eq!((p.from.as_str(), p.to.as_str(), p.max_depth), ("a", "b", 6));
+        assert_eq!(validate_path(q("a", "b", Some(0))).unwrap().max_depth, 1);
+        assert_eq!(validate_path(q("a", "b", Some(99))).unwrap().max_depth, 12);
+        assert!(validate_path(q("", "b", None)).is_err());
+        assert!(validate_path(q("a", &"x".repeat(600), None)).is_err());
+    }
+
+    #[test]
+    fn communities_defaults_and_clamps() {
+        let p = validate_communities(CommunitiesQuery {
+            limit: None,
+            min_size: None,
+            members: None,
+            typed_only: false,
+        });
+        assert_eq!((p.limit, p.min_size, p.members), (20, 3, 10));
+        let p = validate_communities(CommunitiesQuery {
+            limit: Some(0),
+            min_size: Some(0),
+            members: Some(1000),
+            typed_only: false,
+        });
+        assert_eq!((p.limit, p.min_size, p.members), (1, 2, 100));
     }
 }
 
